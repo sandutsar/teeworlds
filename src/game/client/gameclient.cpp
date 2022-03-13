@@ -17,6 +17,7 @@
 #include <generated/client_data.h>
 
 #include <game/version.h>
+#include "lineinput.h"
 #include "localization.h"
 #include "render.h"
 
@@ -350,7 +351,7 @@ void CGameClient::OnInit()
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
 
 	// propagate pointers
-	m_UI.Init(Config(), Graphics(), Input(), TextRender());
+	m_UI.Init(Kernel());
 	m_RenderTools.Init(Config(), Graphics());
 
 	int64 Start = time_get();
@@ -601,6 +602,8 @@ void CGameClient::StartRendering()
 
 void CGameClient::OnRender()
 {
+	CUIElementBase::Init(UI()); // update static pointer because game and editor use separate UI
+
 	// update the local character and spectate position
 	UpdatePositions();
 
@@ -612,6 +615,8 @@ void CGameClient::OnRender()
 
 	// clear all events/input for this frame
 	Input()->Clear();
+
+	CLineInput::RenderCandidates();
 }
 
 void CGameClient::OnRelease()
@@ -1687,6 +1692,10 @@ vec2 CGameClient::GetCharPos(int ClientID, bool Predicted) const
 void CGameClient::OnActivateEditor()
 {
 	OnRelease();
+
+	CLineInput *pActiveInput = CLineInput::GetActiveInput();
+	if(pActiveInput)
+		pActiveInput->Deactivate();
 }
 
 void CGameClient::CClientData::UpdateBotRenderInfo(CGameClient *pGameClient, int ClientID)
@@ -1711,7 +1720,7 @@ void CGameClient::CClientData::UpdateBotRenderInfo(CGameClient *pGameClient, int
 		m_RenderInfo.m_BotTexture = pGameClient->m_pSkins->m_BotTexture;
 		if(!m_RenderInfo.m_BotColor.a) // bot color has not been set; pick a random color once
 		{
-			const unsigned char* pBotColor = s_aBotColors[rand()%(sizeof(s_aBotColors)/sizeof(s_aBotColors[0]))];
+			const unsigned char *pBotColor = s_aBotColors[random_int() % (sizeof(s_aBotColors) / sizeof(s_aBotColors[0]))];
 			m_RenderInfo.m_BotColor = vec4(pBotColor[0]/255.f, pBotColor[1]/255.f, pBotColor[2]/255.f, 1.0f);
 		}
 	}

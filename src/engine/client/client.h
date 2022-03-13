@@ -62,6 +62,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	IEngineTextRender *m_pTextRender;
 	IGameClient *m_pGameClient;
 	IEngineMap *m_pMap;
+	IMapChecker *m_pMapChecker;
 	IConfigManager *m_pConfigManager;
 	CConfig *m_pConfig;
 	IConsole *m_pConsole;
@@ -81,7 +82,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	class CServerBrowser m_ServerBrowser;
 	class CFriends m_Friends;
 	class CBlacklist m_Blacklist;
-	class CMapChecker m_MapChecker;
 
 	char m_aServerAddressStr[256];
 	char m_aServerPassword[128];
@@ -103,7 +103,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	bool m_AutoStatScreenshotRecycle;
 	bool m_EditorActive;
 	bool m_SoundInitFailed;
-	bool m_ResortServerBrowser;
 	bool m_RecordGameMessage;
 
 	int m_AckGameTick;

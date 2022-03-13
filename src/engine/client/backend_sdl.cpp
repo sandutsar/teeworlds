@@ -1,3 +1,5 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include <base/detect.h>
 #include "SDL.h"
 #include "SDL_opengl.h"
@@ -580,23 +582,18 @@ bool CCommandProcessorFragment_SDL::RunCommand(const CCommandBuffer::CCommand *p
 
 void CCommandProcessor_SDL_OpenGL::RunBuffer(CCommandBuffer *pBuffer)
 {
-	unsigned CmdIndex = 0;
-	while(1)
+	for(CCommandBuffer::CCommand *pCommand = pBuffer->Head(); pCommand; pCommand = pCommand->m_pNext)
 	{
-		const CCommandBuffer::CCommand *pBaseCommand = pBuffer->GetCommand(&CmdIndex);
-		if(pBaseCommand == 0x0)
-			break;
-
-		if(m_OpenGL.RunCommand(pBaseCommand))
+		if(m_OpenGL.RunCommand(pCommand))
 			continue;
 
-		if(m_SDL.RunCommand(pBaseCommand))
+		if(m_SDL.RunCommand(pCommand))
 			continue;
 
-		if(m_General.RunCommand(pBaseCommand))
+		if(m_General.RunCommand(pCommand))
 			continue;
 
-		dbg_msg("graphics", "unknown command %d", pBaseCommand->m_Cmd);
+		dbg_msg("graphics", "unknown command %d", pCommand->m_Cmd);
 	}
 }
 

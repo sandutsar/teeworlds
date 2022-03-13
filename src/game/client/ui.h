@@ -3,7 +3,8 @@
 #ifndef GAME_CLIENT_UI_H
 #define GAME_CLIENT_UI_H
 
-#include <engine/input.h>
+#include <engine/textrender.h>
+#include "lineinput.h"
 #include "ui_rect.h"
 
 class IScrollbarScale
@@ -54,14 +55,85 @@ public:
 		}
 		return round_to_int(exp(RelativeValue*(log(Max) - log(Min)) + log(Min))) + ResultAdjustment;
 	}
-} LogarithmicScrollbarScale(25);
+} const LogarithmicScrollbarScale(25);
+
+
+class IButtonColorFunction
+{
+public:
+	virtual vec4 GetColor(bool Active, bool Hovered) const = 0;
+};
+static class CDarkButtonColorFunction : public IButtonColorFunction
+{
+public:
+	vec4 GetColor(bool Active, bool Hovered) const
+	{
+		if(Active)
+			return vec4(0.15f, 0.15f, 0.15f, 0.25f);
+		else if(Hovered)
+			return vec4(0.5f, 0.5f, 0.5f, 0.25f);
+		return vec4(0.0f, 0.0f, 0.0f, 0.25f);
+	}
+} const DarkButtonColorFunction;
+static class CLightButtonColorFunction : public IButtonColorFunction
+{
+public:
+	vec4 GetColor(bool Active, bool Hovered) const
+	{
+		if(Active)
+			return vec4(1.0f, 1.0f, 1.0f, 0.4f);
+		else if(Hovered)
+			return vec4(1.0f, 1.0f, 1.0f, 0.6f);
+		return vec4(1.0f, 1.0f, 1.0f, 0.5f);
+	}
+} const LightButtonColorFunction;
+static class CScrollBarColorFunction : public IButtonColorFunction
+{
+public:
+	vec4 GetColor(bool Active, bool Hovered) const
+	{
+		if(Active)
+			return vec4(0.9f, 0.9f, 0.9f, 1.0f);
+		else if(Hovered)
+			return vec4(1.0f, 1.0f, 1.0f, 1.0f);
+		return vec4(0.8f, 0.8f, 0.8f, 1.0f);
+	}
+} const ScrollBarColorFunction;
+
+
+class CUIElementBase
+{
+private:
+	static class CUI *s_pUI;
+
+public:
+	static void Init(CUI *pUI) { s_pUI = pUI; }
+
+	class CUI *UI() const { return s_pUI; }
+	class IClient *Client() const;
+	class CConfig *Config() const;
+	class IGraphics *Graphics() const;
+	class IInput *Input() const;
+	class ITextRender *TextRender() const;
+};
+
+class CButtonContainer : public CUIElementBase
+{
+	bool m_CleanBackground;
+	float m_FadeStartTime;
+public:
+	CButtonContainer(bool CleanBackground = false) : m_FadeStartTime(0.0f) { m_CleanBackground = CleanBackground; }
+	float GetFade(bool Checked = false, float Seconds = 0.6f);
+	bool IsCleanBackground() const { return m_CleanBackground; }
+};
 
 
 class CUI
 {
 	enum
 	{
-		MAX_CLIP_NESTING_DEPTH = 16
+		MAX_CLIP_NESTING_DEPTH = 16,
+		MAX_POPUP_MENUS = 8,
 	};
 
 	bool m_Enabled;
@@ -85,10 +157,28 @@ class CUI
 	unsigned m_NumClips;
 	void UpdateClipping();
 
+	const void *m_pActiveTooltip;
+	CUIRect m_TooltipAnchor;
+	char m_aTooltipText[256];
+
+	class
+	{
+	public:
+		CUIRect m_Rect;
+		int m_Corners;
+		void *m_pContext;
+		bool (*m_pfnFunc)(void *pContext, CUIRect View); // returns true to close popup
+		bool m_New;
+	} m_aPopupMenus[MAX_POPUP_MENUS];
+	unsigned m_NumPopupMenus;
+
+	class IClient *m_pClient;
 	class CConfig *m_pConfig;
 	class IGraphics *m_pGraphics;
 	class IInput *m_pInput;
 	class ITextRender *m_pTextRender;
+
+	void ApplyCursorAlign(class CTextCursor *pCursor, const CUIRect *pRect, int Align);
 
 public:
 	static const vec4 ms_DefaultTextColor;
@@ -100,21 +190,14 @@ public:
 	static const float ms_ListheaderHeight;
 	static const float ms_FontmodHeight;
 
-	// TODO: Refactor: Fill this in
-	void Init(class CConfig *pConfig, class IGraphics *pGraphics, class IInput *pInput, class ITextRender *pTextRender) { m_pConfig = pConfig; m_pGraphics = pGraphics; m_pInput = pInput; m_pTextRender = pTextRender; CUIRect::Init(pGraphics); }
+	void Init(class IKernel *pKernel);
+	class IClient *Client() const { return m_pClient; }
 	class CConfig *Config() const { return m_pConfig; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IInput *Input() const { return m_pInput; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 
 	CUI();
-
-	enum EAlignment
-	{
-		ALIGN_LEFT,
-		ALIGN_CENTER,
-		ALIGN_RIGHT,
-	};
 
 	enum
 	{
@@ -158,7 +241,8 @@ public:
 	bool KeyIsPressed(int Key) const;
 	bool ConsumeHotkey(unsigned Hotkey);
 	void ClearHotkeys() { m_HotkeysPressed = 0; }
-	void OnInput(const IInput::CEvent &e);
+	bool OnInput(const IInput::CEvent &e);
+	bool IsInputActive() const { return CLineInput::GetActiveInput() != 0; }
 
 	const CUIRect *Screen();
 	float PixelSize();
@@ -174,8 +258,13 @@ public:
 	bool DoPickerLogic(const void *pID, const CUIRect *pRect, float *pX, float *pY);
 
 	// labels
-	void DoLabel(const CUIRect *pRect, const char *pText, float FontSize, EAlignment Align, float LineWidth = -1.0f, bool MultiLine = true);
-	void DoLabelHighlighted(const CUIRect *pRect, const char *pText, const char *pHighlighted, float FontSize, const vec4 &TextColor, const vec4 &HighlightColor);
+	void DoLabel(const CUIRect *pRect, const char *pText, float FontSize, int Align = TEXTALIGN_TL, float LineWidth = -1.0f, bool MultiLine = true);
+	void DoLabelHighlighted(const CUIRect *pRect, const char *pText, const char *pHighlighted, float FontSize, const vec4 &TextColor, const vec4 &HighlightColor, int Align = TEXTALIGN_TL);
+	void DoLabelSelected(const CUIRect *pRect, const char *pText, bool Selected, float FontSize, int Align = TEXTALIGN_TL);
+
+	// editboxes
+	bool DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners = CUIRect::CORNER_ALL, const IButtonColorFunction *pColorFunction = &DarkButtonColorFunction);
+	void DoEditBoxOption(CLineInput *pLineInput, const CUIRect *pRect, const char *pStr, float VSplitVal);
 
 	// scrollbars
 	float DoScrollbarV(const void *pID, const CUIRect *pRect, float Current);
@@ -183,10 +272,22 @@ public:
 	void DoScrollbarOption(const void *pID, int *pOption, const CUIRect *pRect, const char *pStr, int Min, int Max, const IScrollbarScale *pScale = &LinearScrollbarScale, bool Infinite = false);
 	void DoScrollbarOptionLabeled(const void *pID, int *pOption, const CUIRect *pRect, const char *pStr, const char *apLabels[], int NumLabels, const IScrollbarScale *pScale = &LinearScrollbarScale);
 
+	// tooltips
+	void DoTooltip(const void *pID, const CUIRect *pRect, const char *pText);
+	void RenderTooltip();
+
+	// popup menu
+	void DoPopupMenu(int X, int Y, int Width, int Height, void *pContext, bool (*pfnFunc)(void *pContext, CUIRect View), int Corners = CUIRect::CORNER_ALL);
+	void RenderPopupMenus();
+	bool IsPopupActive() const { return m_NumPopupMenus > 0; }
+
 	// client ID
 	float DrawClientID(float FontSize, vec2 Position, int ID,
 					const vec4& BgColor = vec4(1.0f, 1.0f, 1.0f, 0.5f), const vec4& TextColor = vec4(0.1f, 0.1f, 0.1f, 1.0f));
 	float GetClientIDRectWidth(float FontSize);
+
+	float GetListHeaderHeight() const;
+	float GetListHeaderHeightFactor() const;
 };
 
 

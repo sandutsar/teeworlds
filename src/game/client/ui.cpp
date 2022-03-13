@@ -3,10 +3,13 @@
 #include <base/system.h>
 
 #include <engine/shared/config.h>
+
+#include <engine/client.h>
 #include <engine/graphics.h>
-#include <engine/textrender.h>
-#include <engine/keys.h>
 #include <engine/input.h>
+#include <engine/keys.h>
+#include <engine/textrender.h>
+
 #include "ui.h"
 
 /********************************************************
@@ -21,6 +24,26 @@ const vec4 CUI::ms_DefaultTextOutlineColor(0.0f, 0.0f, 0.0f, 0.3f);
 const vec4 CUI::ms_HighlightTextColor(0.0f, 0.0f, 0.0f, 1.0f);
 const vec4 CUI::ms_HighlightTextOutlineColor(1.0f, 1.0f, 1.0f, 0.25f);
 const vec4 CUI::ms_TransparentTextColor(1.0f, 1.0f, 1.0f, 0.5f);
+
+CUI *CUIElementBase::s_pUI = 0;
+
+IClient *CUIElementBase::Client() const { return s_pUI->Client(); }
+CConfig *CUIElementBase::Config() const { return s_pUI->Config(); }
+IGraphics *CUIElementBase::Graphics() const { return s_pUI->Graphics(); }
+IInput *CUIElementBase::Input() const { return s_pUI->Input(); }
+ITextRender *CUIElementBase::TextRender() const { return s_pUI->TextRender(); }
+
+float CButtonContainer::GetFade(bool Checked, float Seconds)
+{
+	if(UI()->HotItem() == this || Checked)
+	{
+		m_FadeStartTime = Client()->LocalTime();
+		return 1.0f;
+	}
+
+	return maximum(0.0f, m_FadeStartTime -  Client()->LocalTime() + Seconds)/Seconds;
+}
+
 
 CUI::CUI()
 {
@@ -43,6 +66,23 @@ CUI::CUI()
 	m_Screen.y = 0;
 
 	m_NumClips = 0;
+
+	m_pActiveTooltip = 0;
+	m_aTooltipText[0] = '\0';
+
+	m_NumPopupMenus = 0;
+}
+
+void CUI::Init(class IKernel *pKernel)
+{
+	m_pClient = pKernel->RequestInterface<IClient>();
+	m_pConfig = pKernel->RequestInterface<IConfigManager>()->Values();
+	m_pGraphics = pKernel->RequestInterface<IGraphics>();
+	m_pInput = pKernel->RequestInterface<IInput>();
+	m_pTextRender = pKernel->RequestInterface<ITextRender>();
+	CUIRect::Init(m_pGraphics);
+	CLineInput::Init(m_pInput, m_pTextRender, m_pGraphics);
+	CUIElementBase::Init(this);
 }
 
 void CUI::Update(float MouseX, float MouseY, float MouseWorldX, float MouseWorldY)
@@ -65,6 +105,13 @@ void CUI::Update(float MouseX, float MouseY, float MouseWorldX, float MouseWorld
 	if(m_pActiveItem)
 		m_pHotItem = m_pActiveItem;
 	m_pBecommingHotItem = 0;
+
+	if(Enabled())
+	{
+		CLineInput *pActiveInput = CLineInput::GetActiveInput();
+		if(pActiveInput && m_pLastActiveItem && pActiveInput != m_pLastActiveItem)
+			pActiveInput->Deactivate();
+	}
 }
 
 bool CUI::KeyPress(int Key) const
@@ -84,10 +131,18 @@ bool CUI::ConsumeHotkey(unsigned Hotkey)
 	return Pressed;
 }
 
-void CUI::OnInput(const IInput::CEvent &e)
+bool CUI::OnInput(const IInput::CEvent &e)
 {
+	if(!Enabled())
+		return false;
+
+	CLineInput *pActiveInput = CLineInput::GetActiveInput();
+	if(pActiveInput && pActiveInput->ProcessInput(e))
+		return true;
+
 	if(e.m_Flags&IInput::FLAG_PRESS)
 	{
+		unsigned LastHotkeysPressed = m_HotkeysPressed;
 		if(e.m_Key == KEY_RETURN || e.m_Key == KEY_KP_ENTER)
 			m_HotkeysPressed |= HOTKEY_ENTER;
 		else if(e.m_Key == KEY_ESCAPE)
@@ -100,7 +155,9 @@ void CUI::OnInput(const IInput::CEvent &e)
 			m_HotkeysPressed |= HOTKEY_UP;
 		else if(e.m_Key == KEY_DOWN)
 			m_HotkeysPressed |= HOTKEY_DOWN;
+		return LastHotkeysPressed != m_HotkeysPressed;
 	}
+	return false;
 }
 
 void CUI::ConvertCursorMove(float *pX, float *pY, int CursorType) const
@@ -245,7 +302,26 @@ bool CUI::DoPickerLogic(const void *pID, const CUIRect *pRect, float *pX, float 
 	return true;
 }
 
-void CUI::DoLabel(const CUIRect *pRect, const char *pText, float FontSize, EAlignment Align, float LineWidth, bool MultiLine)
+void CUI::ApplyCursorAlign(class CTextCursor *pCursor, const CUIRect *pRect, int Align)
+{
+	pCursor->m_Align = Align;
+
+	float x = pRect->x;
+	if((Align & TEXTALIGN_MASK_HORI) == TEXTALIGN_CENTER)
+		x += pRect->w / 2.0f;
+	else if((Align & TEXTALIGN_MASK_HORI) == TEXTALIGN_RIGHT)
+		x += pRect->w;
+
+	float y = pRect->y;
+	if((Align & TEXTALIGN_MASK_VERT) == TEXTALIGN_MIDDLE)
+		y += pRect->h / 2.0f;
+	else if((Align & TEXTALIGN_MASK_VERT) == TEXTALIGN_BOTTOM)
+		y += pRect->h;
+
+	pCursor->MoveTo(x, y);
+}
+
+void CUI::DoLabel(const CUIRect *pRect, const char *pText, float FontSize, int Align, float LineWidth, bool MultiLine)
 {
 	// TODO: FIX ME!!!!
 	// Graphics()->BlendNormal();
@@ -255,43 +331,30 @@ void CUI::DoLabel(const CUIRect *pRect, const char *pText, float FontSize, EAlig
 	s_Cursor.m_FontSize = FontSize;
 	s_Cursor.m_MaxLines = MultiLine ? -1 : 1;
 	s_Cursor.m_MaxWidth = LineWidth;
-	s_Cursor.m_Align = Align;
+	s_Cursor.m_Flags = MultiLine ? TEXTFLAG_WORD_WRAP : 0;
+	ApplyCursorAlign(&s_Cursor, pRect, Align);
 
-	switch(Align)
-	{
-	case CUI::ALIGN_LEFT:
-		s_Cursor.m_Align = TEXTALIGN_LEFT;
-		s_Cursor.MoveTo(pRect->x, pRect->y);
-		break;
-	case CUI::ALIGN_CENTER:
-		s_Cursor.m_Align = TEXTALIGN_CENTER;
-		s_Cursor.MoveTo(pRect->x + pRect->w / 2.0f, pRect->y);
-		break;
-	case CUI::ALIGN_RIGHT:
-		s_Cursor.m_Align = TEXTALIGN_RIGHT;
-		s_Cursor.MoveTo(pRect->x + pRect->w, pRect->y);
-		break;
-	}
 	TextRender()->TextOutlined(&s_Cursor, pText, -1);
 }
 
-void CUI::DoLabelHighlighted(const CUIRect *pRect, const char *pText, const char *pHighlighted, float FontSize, const vec4 &TextColor, const vec4 &HighlightColor)
+void CUI::DoLabelHighlighted(const CUIRect *pRect, const char *pText, const char *pHighlighted, float FontSize, const vec4 &TextColor, const vec4 &HighlightColor, int Align)
 {
 	static CTextCursor s_Cursor;
 	s_Cursor.Reset();
 	s_Cursor.m_FontSize = FontSize;
 	s_Cursor.m_MaxWidth = pRect->w;
-	s_Cursor.MoveTo(pRect->x, pRect->y);
+	ApplyCursorAlign(&s_Cursor, pRect, Align);
 
 	TextRender()->TextColor(TextColor);
 	const char *pMatch = pHighlighted && pHighlighted[0] ? str_find_nocase(pText, pHighlighted) : 0;
 	if(pMatch)
 	{
+		const int HighlightLength = str_length(pHighlighted);
 		TextRender()->TextDeferred(&s_Cursor, pText, (int)(pMatch - pText));
 		TextRender()->TextColor(HighlightColor);
-		TextRender()->TextDeferred(&s_Cursor, pMatch, str_length(pHighlighted));
+		TextRender()->TextDeferred(&s_Cursor, pMatch, HighlightLength);
 		TextRender()->TextColor(TextColor);
-		TextRender()->TextDeferred(&s_Cursor, pMatch + str_length(pHighlighted), -1);
+		TextRender()->TextDeferred(&s_Cursor, pMatch + HighlightLength, -1);
 	}
 	else
 		TextRender()->TextDeferred(&s_Cursor, pText, -1);
@@ -299,22 +362,217 @@ void CUI::DoLabelHighlighted(const CUIRect *pRect, const char *pText, const char
 	TextRender()->DrawTextOutlined(&s_Cursor);
 }
 
+void CUI::DoLabelSelected(const CUIRect *pRect, const char *pText, bool Selected, float FontSize, int Align)
+{
+	if(Selected)
+	{
+		TextRender()->TextColor(CUI::ms_HighlightTextColor);
+		TextRender()->TextSecondaryColor(CUI::ms_HighlightTextOutlineColor);
+	}
+	DoLabel(pRect, pText, FontSize, Align);
+	if(Selected)
+	{
+		TextRender()->TextColor(CUI::ms_DefaultTextColor);
+		TextRender()->TextSecondaryColor(CUI::ms_DefaultTextOutlineColor);
+	}
+}
+
+bool CUI::DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners, const IButtonColorFunction *pColorFunction)
+{
+	const bool Inside = MouseHovered(pRect);
+	const bool Active = LastActiveItem() == pLineInput;
+	const bool Changed = pLineInput->WasChanged();
+	const char *pDisplayStr = pLineInput->GetDisplayedString();
+
+	bool UpdateOffset = false;
+	float ScrollOffset = pLineInput->GetScrollOffset();
+
+	static bool s_DoScroll = false;
+	static int s_SelectionStartOffset = -1;
+
+	const float VSpacing = 2.0f;
+	CUIRect Textbox;
+	pRect->VMargin(VSpacing, &Textbox);
+
+	if(Active)
+	{
+		static float s_ScrollStartX = 0.0f;
+
+		int CursorOffset = pLineInput->GetCursorOffset();
+
+		if(Inside && MouseButton(0) && !Changed)
+		{
+			s_DoScroll = true;
+			s_ScrollStartX = MouseX();
+			const float MxRel = MouseX() - Textbox.x;
+			float TotalTextWidth = 0.0f;
+			for(int i = 1, Offset = 0; i <= pLineInput->GetNumChars(); i++)
+			{
+				const int PrevOffset = Offset;
+				Offset = str_utf8_forward(pDisplayStr, Offset);
+				const float AddedTextWidth = TextRender()->TextWidth(FontSize, pDisplayStr + PrevOffset, Offset - PrevOffset);
+				if(TotalTextWidth + AddedTextWidth/2.0f - ScrollOffset > MxRel)
+				{
+					CursorOffset = PrevOffset;
+					if(s_SelectionStartOffset < 0)
+						s_SelectionStartOffset = CursorOffset;
+					break;
+				}
+				TotalTextWidth += AddedTextWidth;
+
+				if(i == pLineInput->GetNumChars())
+				{
+					CursorOffset = pLineInput->GetLength();
+					if(s_SelectionStartOffset < 0)
+						s_SelectionStartOffset = CursorOffset;
+				}
+			}
+		}
+		else if(!MouseButton(0) || Changed)
+		{
+			s_DoScroll = false;
+			s_SelectionStartOffset = -1;
+		}
+		else if(s_DoScroll)
+		{
+			// do scrolling
+			if(MouseX() < Textbox.x && s_ScrollStartX-MouseX() > 10.0f)
+			{
+				CursorOffset = str_utf8_rewind(pDisplayStr, CursorOffset);
+				s_ScrollStartX = MouseX();
+				UpdateOffset = true;
+			}
+			else if(MouseX() > Textbox.x+Textbox.w && MouseX()-s_ScrollStartX > 10.0f)
+			{
+				CursorOffset = str_utf8_forward(pDisplayStr, CursorOffset);
+				s_ScrollStartX = MouseX();
+				UpdateOffset = true;
+			}
+		}
+		else if(!Inside && MouseButton(0))
+		{
+			s_DoScroll = false;
+			s_SelectionStartOffset = -1;
+			SetActiveItem(0);
+			ClearLastActiveItem();
+		}
+
+		if(s_SelectionStartOffset >= 0)
+		{
+			const int ActualCursorOffset = pLineInput->OffsetFromDisplayToActual(CursorOffset);
+			pLineInput->SetCursorOffset(ActualCursorOffset);
+			pLineInput->SetSelection(pLineInput->OffsetFromDisplayToActual(s_SelectionStartOffset), ActualCursorOffset);
+		}
+	}
+
+	bool JustGotActive = false;
+
+	if(CheckActiveItem(pLineInput))
+	{
+		if(MouseButton(0))
+		{
+			if(pLineInput->IsActive() && (Input()->HasComposition() || Input()->GetCandidateCount()))
+			{
+				// Clear IME composition/candidates on mouse press
+				Input()->StopTextInput();
+				Input()->StartTextInput();
+			}
+		}
+		else
+		{
+			s_DoScroll = false;
+			s_SelectionStartOffset = -1;
+			SetActiveItem(0);
+		}
+	}
+	else if(HotItem() == pLineInput)
+	{
+		if(MouseButton(0))
+		{
+			if(!Active)
+				JustGotActive = true;
+			SetActiveItem(pLineInput);
+		}
+	}
+
+	if(Inside)
+		SetHotItem(pLineInput);
+
+	if(Enabled() && Active && !JustGotActive)
+		pLineInput->Activate(UI);
+	else
+		pLineInput->Deactivate();
+
+	// render
+	CTextCursor *pCursor = pLineInput->GetCursor();
+	pCursor->m_FontSize = FontSize;
+	pRect->Draw(pColorFunction->GetColor(Active, Inside), 5.0f, Corners);
+	ClipEnable(pRect);
+	Textbox.x -= ScrollOffset;
+	ApplyCursorAlign(pCursor, &Textbox, TEXTALIGN_ML);
+	pLineInput->Render();
+	ClipDisable();
+
+	// check if the text has to be moved
+	if(Active && !JustGotActive && (UpdateOffset || Changed))
+	{
+		const float CaretX = pLineInput->GetCaretPosition().x - Textbox.x;
+		if(CaretX - ScrollOffset > Textbox.w)
+		{
+			// move to the left
+			do
+			{
+				ScrollOffset += clamp(pLineInput->GetCursor()->Width() - ScrollOffset - Textbox.w, 0.1f, Textbox.w / 3.0f);
+			}
+			while(CaretX - ScrollOffset > Textbox.w);
+		}
+		else if(CaretX - ScrollOffset < 0.0f)
+		{
+			// move to the right
+			do
+			{
+				ScrollOffset = maximum(0.0f, ScrollOffset - Textbox.w / 3.0f);
+			}
+			while(CaretX - ScrollOffset < 0.0f);
+		}
+	}
+
+	pLineInput->SetScrollOffset(ScrollOffset);
+
+	return Changed;
+}
+
+void CUI::DoEditBoxOption(CLineInput *pLineInput, const CUIRect *pRect, const char *pStr, float VSplitVal)
+{
+	pRect->Draw(vec4(0.0f, 0.0f, 0.0f, 0.25f));
+
+	CUIRect Label, EditBox;
+	pRect->VSplitLeft(VSplitVal, &Label, &EditBox);
+
+	const float FontSize = pRect->h*CUI::ms_FontmodHeight*0.8f;
+	char aBuf[32];
+	str_format(aBuf, sizeof(aBuf), "%s:", pStr);
+	DoLabel(&Label, aBuf, FontSize, TEXTALIGN_MC);
+
+	DoEditBox(pLineInput, &EditBox, FontSize);
+}
+
 float CUI::DoScrollbarV(const void *pID, const CUIRect *pRect, float Current)
 {
-	// layout
-	CUIRect Handle;
-	pRect->HSplitTop(minimum(pRect->h/8.0f, 33.0f), &Handle, 0);
-	Handle.y += (pRect->h-Handle.h)*Current;
-	Handle.VMargin(5.0f, &Handle);
+	Current = clamp(Current, 0.0f, 1.0f);
 
+	// layout
 	CUIRect Rail;
 	pRect->VMargin(5.0f, &Rail);
+
+	CUIRect Handle;
+	Rail.HSplitTop(clamp(33.0f, Rail.w, Rail.h / 3.0f), &Handle, 0);
+	Handle.y += (Rail.h - Handle.h) * Current;
 
 	// logic
 	static float s_OffsetY;
 	const bool InsideHandle = MouseHovered(&Handle);
 	const bool InsideRail = MouseHovered(&Rail);
-	float ReturnValue = Current;
 	bool Grabbed = false; // whether to apply the offset
 
 	if(CheckActiveItem(pID))
@@ -328,14 +586,14 @@ float CUI::DoScrollbarV(const void *pID, const CUIRect *pRect, float Current)
 	{
 		if(MouseButton(0))
 		{
-			s_OffsetY = MouseY()-Handle.y;
+			s_OffsetY = MouseY() - Handle.y;
 			SetActiveItem(pID);
 			Grabbed = true;
 		}
 	}
 	else if(MouseButtonClicked(0) && !InsideHandle && InsideRail)
 	{
-		s_OffsetY = Handle.h * 0.5f;
+		s_OffsetY = Handle.h / 2.0f;
 		SetActiveItem(pID);
 		Grabbed = true;
 	}
@@ -345,45 +603,38 @@ float CUI::DoScrollbarV(const void *pID, const CUIRect *pRect, float Current)
 		SetHotItem(pID);
 	}
 
+	float ReturnValue = Current;
 	if(Grabbed)
 	{
-		const float Min = pRect->y;
-		const float Max = pRect->h-Handle.h;
-		const float Cur = MouseY()-s_OffsetY;
-		ReturnValue = clamp((Cur-Min)/Max, 0.0f, 1.0f);
+		const float Min = Rail.y;
+		const float Max = Rail.h - Handle.h;
+		const float Cur = MouseY() - s_OffsetY;
+		ReturnValue = clamp((Cur - Min) / Max, 0.0f, 1.0f);
 	}
 
 	// render
-	Rail.Draw(vec4(1.0f, 1.0f, 1.0f, 0.25f), Rail.w/2.0f);
-
-	vec4 Color;
-	if(Grabbed)
-		Color = vec4(0.9f, 0.9f, 0.9f, 1.0f);
-	else if(InsideHandle)
-		Color = vec4(1.0f, 1.0f, 1.0f, 1.0f);
-	else
-		Color = vec4(0.8f, 0.8f, 0.8f, 1.0f);
-	Handle.Draw(Color, Handle.w/2.0f);
+	Rail.Draw(vec4(1.0f, 1.0f, 1.0f, 0.25f), Rail.w / 2.0f);
+	Handle.Draw(ScrollBarColorFunction.GetColor(Grabbed, InsideHandle), Handle.w / 2.0f);
 
 	return ReturnValue;
 }
 
 float CUI::DoScrollbarH(const void *pID, const CUIRect *pRect, float Current)
 {
-	// layout
-	CUIRect Handle;
-	pRect->VSplitLeft(maximum(minimum(pRect->w/8.0f, 33.0f), pRect->h), &Handle, 0);
-	Handle.x += (pRect->w-Handle.w)*clamp(Current, 0.0f, 1.0f);
-	Handle.HMargin(5.0f, &Handle);
+	Current = clamp(Current, 0.0f, 1.0f);
 
+	// layout
 	CUIRect Rail;
 	pRect->HMargin(5.0f, &Rail);
+
+	CUIRect Handle;
+	Rail.VSplitLeft(clamp(33.0f, Rail.h, Rail.w / 3.0f), &Handle, 0);
+	Handle.x += (Rail.w - Handle.w) * Current;
 
 	// logic
 	static float s_OffsetX;
 	const bool InsideHandle = MouseHovered(&Handle);
 	const bool InsideRail = MouseHovered(&Rail);
-	float ReturnValue = Current;
 	bool Grabbed = false; // whether to apply the offset
 
 	if(CheckActiveItem(pID))
@@ -397,14 +648,14 @@ float CUI::DoScrollbarH(const void *pID, const CUIRect *pRect, float Current)
 	{
 		if(MouseButton(0))
 		{
-			s_OffsetX = MouseX()-Handle.x;
+			s_OffsetX = MouseX() - Handle.x;
 			SetActiveItem(pID);
 			Grabbed = true;
 		}
 	}
 	else if(MouseButtonClicked(0) && !InsideHandle && InsideRail)
 	{
-		s_OffsetX = Handle.w * 0.5f;
+		s_OffsetX = Handle.w / 2.0f;
 		SetActiveItem(pID);
 		Grabbed = true;
 	}
@@ -414,25 +665,18 @@ float CUI::DoScrollbarH(const void *pID, const CUIRect *pRect, float Current)
 		SetHotItem(pID);
 	}
 
+	float ReturnValue = Current;
 	if(Grabbed)
 	{
-		const float Min = pRect->x;
-		const float Max = pRect->w-Handle.w;
-		const float Cur = MouseX()-s_OffsetX;
-		ReturnValue = clamp((Cur-Min)/Max, 0.0f, 1.0f);
+		const float Min = Rail.x;
+		const float Max = Rail.w - Handle.w;
+		const float Cur = MouseX() - s_OffsetX;
+		ReturnValue = clamp((Cur - Min) / Max, 0.0f, 1.0f);
 	}
 
 	// render
-	Rail.Draw(vec4(1.0f, 1.0f, 1.0f, 0.25f), Rail.h/2.0f);
-
-	vec4 Color;
-	if(Grabbed)
-		Color = vec4(0.9f, 0.9f, 0.9f, 1.0f);
-	else if(InsideHandle)
-		Color = vec4(1.0f, 1.0f, 1.0f, 1.0f);
-	else
-		Color = vec4(0.8f, 0.8f, 0.8f, 1.0f);
-	Handle.Draw(Color, Handle.h/2.0f);
+	Rail.Draw(vec4(1.0f, 1.0f, 1.0f, 0.25f), Rail.h / 2.0f);
+	Handle.Draw(ScrollBarColorFunction.GetColor(Grabbed, InsideHandle), Handle.h / 2.0f);
 
 	return ReturnValue;
 }
@@ -456,7 +700,7 @@ void CUI::DoScrollbarOption(const void *pID, int *pOption, const CUIRect *pRect,
 	else
 		str_format(aBuf, sizeof(aBuf), "%s: \xe2\x88\x9e", pStr);
 
-	float FontSize = pRect->h*ms_FontmodHeight*0.8f;
+	float FontSize = pRect->h*CUI::ms_FontmodHeight*0.8f;
 	float VSplitVal = maximum(TextRender()->TextWidth(FontSize, aBuf, -1), TextRender()->TextWidth(FontSize, aBufMax, -1));
 
 	pRect->Draw(vec4(0.0f, 0.0f, 0.0f, 0.25f));
@@ -464,8 +708,7 @@ void CUI::DoScrollbarOption(const void *pID, int *pOption, const CUIRect *pRect,
 	CUIRect Label, ScrollBar;
 	pRect->VSplitLeft(pRect->h+10.0f+VSplitVal, &Label, &ScrollBar);
 	Label.VSplitLeft(Label.h+5.0f, 0, &Label);
-	Label.y += 2.0f;
-	DoLabel(&Label, aBuf, FontSize, CUI::ALIGN_LEFT);
+	DoLabel(&Label, aBuf, FontSize, TEXTALIGN_ML);
 
 	ScrollBar.VMargin(4.0f, &ScrollBar);
 	Value = pScale->ToAbsolute(DoScrollbarH(pID, &ScrollBar, pScale->ToRelative(Value, Min, Max)), Min, Max);
@@ -483,15 +726,14 @@ void CUI::DoScrollbarOptionLabeled(const void *pID, int *pOption, const CUIRect 
 	char aBuf[128];
 	str_format(aBuf, sizeof(aBuf), "%s: %s", pStr, aLabels[Value]);
 
-	float FontSize = pRect->h*ms_FontmodHeight*0.8f;
+	float FontSize = pRect->h*CUI::ms_FontmodHeight*0.8f;
 
 	pRect->Draw(vec4(0.0f, 0.0f, 0.0f, 0.25f));
 
 	CUIRect Label, ScrollBar;
 	pRect->VSplitLeft(pRect->h+5.0f, 0, &Label);
 	Label.VSplitRight(60.0f, &Label, &ScrollBar);
-	Label.y += 2.0f;
-	DoLabel(&Label, aBuf, FontSize, CUI::ALIGN_LEFT);
+	DoLabel(&Label, aBuf, FontSize, TEXTALIGN_ML);
 
 	ScrollBar.VMargin(4.0f, &ScrollBar);
 	Value = pScale->ToAbsolute(DoScrollbarH(pID, &ScrollBar, pScale->ToRelative(Value, 0, Max)), 0, Max);
@@ -536,9 +778,144 @@ float CUI::DrawClientID(float FontSize, vec2 CursorPosition, int ID, const vec4&
 	return Width + 0.2f * FontSize;
 }
 
+void CUI::DoTooltip(const void *pID, const CUIRect *pRect, const char *pText)
+{
+	if(MouseHovered(pRect))
+	{
+		m_pActiveTooltip = pID;
+		m_TooltipAnchor = *pRect;
+		str_copy(m_aTooltipText, pText, sizeof(m_aTooltipText));
+	}
+	else if(m_pActiveTooltip == pID)
+	{
+		m_pActiveTooltip = 0;
+		m_aTooltipText[0] = '\0';
+	}
+}
+
+void CUI::RenderTooltip()
+{
+	static const void *s_pLastTooltip = 0;
+	if(!m_pActiveTooltip || !m_aTooltipText[0])
+	{
+		s_pLastTooltip = 0;
+		return;
+	}
+	const int64 Now = time_get();
+	static int64 s_TooltipActivationStart = 0;
+	if(s_pLastTooltip != m_pActiveTooltip)
+	{
+		// Reset the fade in timer if a new tooltip got active
+		s_TooltipActivationStart = Now;
+		s_pLastTooltip = m_pActiveTooltip;
+	}
+
+	const float SecondsBeforeFadeIn = 0.75f;
+	const float SecondsSinceActivation = (Now - s_TooltipActivationStart)/(float)time_freq();
+	if(SecondsSinceActivation < SecondsBeforeFadeIn)
+		return;
+	const float SecondsFadeIn = 0.25f;
+	const float AlphaFactor = SecondsSinceActivation < SecondsBeforeFadeIn+SecondsFadeIn ? (SecondsSinceActivation-SecondsBeforeFadeIn)/SecondsFadeIn : 1.0f;
+	const CUIRect *pScreen = Screen();
+
+	static CTextCursor s_Cursor;
+	s_Cursor.Reset();
+	s_Cursor.m_FontSize = 10.0f;
+	s_Cursor.m_MaxLines = -1;
+	s_Cursor.m_MaxWidth = pScreen->w/4.0f;
+	s_Cursor.m_Flags = TEXTFLAG_ALLOW_NEWLINE|TEXTFLAG_WORD_WRAP;
+	vec4 OldTextColor = TextRender()->GetColor();
+	TextRender()->TextColor(1.0f, 1.0f, 1.0f, AlphaFactor);
+	TextRender()->TextDeferred(&s_Cursor, m_aTooltipText, -1);
+	TextRender()->TextColor(OldTextColor);
+
+	// Position tooltip below hovered rect, to the right of the mouse cursor.
+	// If the tooltip would overflow the screen, position it to the top and/or left instead.
+	CTextBoundingBox BoundingBox = s_Cursor.BoundingBox();
+	const float Rounding = 4.0f;
+	const float Spacing = 4.0f;
+	const float Border = 1.0f;
+	CUIRect Tooltip = { MouseX(), m_TooltipAnchor.y + m_TooltipAnchor.h + Spacing, BoundingBox.w + 2 * (Spacing+Border), BoundingBox.h + 2 * (Spacing+Border) };
+	if(Tooltip.x + Tooltip.w > pScreen->w)
+		Tooltip.x -= Tooltip.w;
+	if(Tooltip.y + Tooltip.h > pScreen->h)
+		Tooltip.y -= Tooltip.h + 2 * Spacing + m_TooltipAnchor.h;
+	Tooltip.Draw(vec4(0.0f, 0.0f, 0.0f, 0.4f * AlphaFactor), Rounding);
+	Tooltip.Margin(Border, &Tooltip);
+	Tooltip.Draw(vec4(0.5f, 0.5f, 0.5f, 0.8f * AlphaFactor), Rounding);
+	Tooltip.Margin(Spacing, &Tooltip);
+	ApplyCursorAlign(&s_Cursor, &Tooltip, TEXTALIGN_ML);
+	TextRender()->DrawTextOutlined(&s_Cursor);
+
+	// Clear active tooltip. DoTooltip must be called each render call.
+	m_pActiveTooltip = 0;
+	m_aTooltipText[0] = '\0';
+}
+
+void CUI::DoPopupMenu(int X, int Y, int Width, int Height, void *pContext, bool (*pfnFunc)(void *pContext, CUIRect View), int Corners)
+{
+	dbg_assert(m_NumPopupMenus < MAX_POPUP_MENUS, "max popup menus exceeded");
+
+	if(X + Width > Screen()->w)
+		X = Screen()->w - Width;
+	if(Y + Height > Screen()->h)
+		Y = Screen()->h - Height;
+
+	m_aPopupMenus[m_NumPopupMenus].m_Rect.x = X;
+	m_aPopupMenus[m_NumPopupMenus].m_Rect.y = Y;
+	m_aPopupMenus[m_NumPopupMenus].m_Rect.w = Width;
+	m_aPopupMenus[m_NumPopupMenus].m_Rect.h = Height;
+	m_aPopupMenus[m_NumPopupMenus].m_Corners = Corners;
+	m_aPopupMenus[m_NumPopupMenus].m_pContext = pContext;
+	m_aPopupMenus[m_NumPopupMenus].m_pfnFunc = pfnFunc;
+	m_aPopupMenus[m_NumPopupMenus].m_New = true;
+	m_NumPopupMenus++;
+}
+
+void CUI::RenderPopupMenus()
+{
+	const bool MousePressed = MouseButton(0) || MouseButton(1);
+	static bool s_MousePressed = MousePressed;
+
+	for(unsigned i = 0; i < m_NumPopupMenus; i++)
+	{
+		const bool Inside = MouseInside(&m_aPopupMenus[i].m_Rect);
+		const bool Active = i == m_NumPopupMenus - 1;
+
+		// prevent activation of UI elements outside of active popup
+		if(Active)
+			SetHotItem(&m_aPopupMenus[i]);
+
+		CUIRect PopupRect = m_aPopupMenus[i].m_Rect;
+		PopupRect.Draw(vec4(0.5f, 0.5f, 0.5f, 0.75f), 3.0f, m_aPopupMenus[i].m_Corners);
+		PopupRect.Margin(1.0f, &PopupRect);
+		PopupRect.Draw(vec4(0.0f, 0.0f, 0.0f, 0.75f), 3.0f, m_aPopupMenus[i].m_Corners);
+		PopupRect.Margin(4.0f, &PopupRect);
+
+		if(m_aPopupMenus[i].m_pfnFunc(m_aPopupMenus[i].m_pContext, PopupRect))
+			m_NumPopupMenus = i; // close this popup and all above it
+		else if(m_aPopupMenus[i].m_New)
+			m_aPopupMenus[i].m_New = false; // prevent popup from being closed by the click that opens it
+		else if(Active && ((!Inside && s_MousePressed && !MousePressed) || ConsumeHotkey(HOTKEY_ESCAPE)))
+			m_NumPopupMenus--; // close top-most popup by clicking outside and with escape
+	}
+
+	s_MousePressed = MousePressed;
+}
+
 float CUI::GetClientIDRectWidth(float FontSize)
 {
 	if(!m_pConfig->m_ClShowUserId)
 		return 0;
 	return 1.4f * FontSize + 0.2f * FontSize;
+}
+
+float CUI::GetListHeaderHeight() const
+{
+	return ms_ListheaderHeight + (m_pConfig->m_UiWideview ? 3.0f : 0.0f);
+}
+
+float CUI::GetListHeaderHeightFactor() const
+{
+	return 1.0f + (m_pConfig->m_UiWideview ? (3.0f/ms_ListheaderHeight) : 0.0f);
 }

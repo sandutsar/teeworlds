@@ -11,6 +11,7 @@
 #include <engine/graphics.h>
 #include <engine/input.h>
 #include <engine/keys.h>
+#include <engine/mapchecker.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -125,7 +126,8 @@ void CLayerGroup::Render()
 		}
 	}
 
-	pGraphics->ClipDisable();
+	if(m_UseClipping)
+		pGraphics->ClipDisable();
 }
 
 void CLayerGroup::AddLayer(CLayer *l)
@@ -161,7 +163,7 @@ int CLayerGroup::SwapLayers(int Index0, int Index1)
 	if(Index1 < 0 || Index1 >= m_lLayers.size()) return Index0;
 	if(Index0 == Index1) return Index0;
 	m_pMap->m_Modified = true;
-	tl_swap(m_lLayers[Index0], m_lLayers[Index1]);
+	std::swap(m_lLayers[Index0], m_lLayers[Index1]);
 	return Index1;
 }
 
@@ -282,164 +284,6 @@ void CEditor::EnvelopeEval(float TimeOffset, int Env, float *pChannels, void *pU
  OTHER
 *********************************************************/
 
-int CEditor::DoEditBox(void *pID, const CUIRect *pRect, char *pStr, unsigned StrSize, float FontSize, float *Offset, bool Hidden, int Corners)
-{
-	bool Inside = UI()->MouseInside(pRect);
-	bool ReturnValue = false;
-	bool UpdateOffset = false;
-	static int s_AtIndex = 0;
-	static bool s_DoScroll = false;
-	static float s_ScrollStart = 0.0f;
-
-	if(UI()->LastActiveItem() == pID)
-	{
-		m_EditBoxActive = 2;
-		int Len = str_length(pStr);
-		if(Len == 0)
-			s_AtIndex = 0;
-
-		if(Inside && UI()->MouseButton(0))
-		{
-			s_DoScroll = true;
-			s_ScrollStart = UI()->MouseX();
-			int MxRel = (int)(UI()->MouseX() - pRect->x);
-
-			for(int i = 1; i <= Len; i++)
-			{
-				if(TextRender()->TextWidth(FontSize, pStr, i) - *Offset > MxRel)
-				{
-					s_AtIndex = i - 1;
-					break;
-				}
-
-				if(i == Len)
-					s_AtIndex = Len;
-			}
-		}
-		else if(!UI()->MouseButton(0))
-			s_DoScroll = false;
-		else if(s_DoScroll)
-		{
-			// do scrolling
-			if(UI()->MouseX() < pRect->x && s_ScrollStart-UI()->MouseX() > 10.0f)
-			{
-				s_AtIndex = maximum(0, s_AtIndex-1);
-				s_ScrollStart = UI()->MouseX();
-				UpdateOffset = true;
-			}
-			else if(UI()->MouseX() > pRect->x+pRect->w && UI()->MouseX()-s_ScrollStart > 10.0f)
-			{
-				s_AtIndex = minimum(Len, s_AtIndex+1);
-				s_ScrollStart = UI()->MouseX();
-				UpdateOffset = true;
-			}
-		}
-		else if(!Inside && UI()->MouseButton(0))
-		{
-			s_AtIndex = minimum(s_AtIndex, str_length(pStr));
-			s_DoScroll = false;
-			UI()->SetActiveItem(0);
-			UI()->ClearLastActiveItem();
-		}
-
-		if(UI()->LastActiveItem() == pID)
-		{
-			for(int i = 0; i < Input()->NumEvents(); i++)
-			{
-				Len = str_length(pStr);
-				int NumChars = Len;
-				ReturnValue |= CLineInput::Manipulate(Input()->GetEvent(i), pStr, StrSize, StrSize, &Len, &s_AtIndex, &NumChars, Input());
-			}
-		}
-	}
-
-	bool JustGotActive = false;
-
-	if(UI()->CheckActiveItem(pID))
-	{
-		if(!UI()->MouseButton(0))
-		{
-			s_AtIndex = minimum(s_AtIndex, str_length(pStr));
-			s_DoScroll = false;
-			UI()->SetActiveItem(0);
-		}
-	}
-	else if(UI()->HotItem() == pID)
-	{
-		if(UI()->MouseButton(0))
-		{
-			if (UI()->LastActiveItem() != pID)
-				JustGotActive = true;
-			UI()->SetActiveItem(pID);
-		}
-	}
-
-	if(Inside)
-		UI()->SetHotItem(pID);
-
-	CUIRect Textbox = *pRect;
-	Textbox.Draw(vec4(1, 1, 1, 0.5f), 3.0f, Corners);
-	Textbox.VMargin(2.0f, &Textbox);
-
-	const char *pDisplayStr = pStr;
-	char aStars[128];
-
-	if(Hidden)
-	{
-		unsigned s = str_length(pStr);
-		if(s >= sizeof(aStars))
-			s = sizeof(aStars)-1;
-		for(unsigned int i = 0; i < s; ++i)
-			aStars[i] = '*';
-		aStars[s] = 0;
-		pDisplayStr = aStars;
-	}
-
-	// check if the text has to be moved
-	if(UI()->LastActiveItem() == pID && !JustGotActive && (UpdateOffset || Input()->NumEvents()))
-	{
-		float w = TextRender()->TextWidth(FontSize, pDisplayStr, s_AtIndex);
-		if(w-*Offset > Textbox.w)
-		{
-			// move to the left
-			float wt = TextRender()->TextWidth(FontSize, pDisplayStr, -1);
-			do
-			{
-				*Offset += minimum(wt-*Offset-Textbox.w, Textbox.w/3);
-			}
-			while(w-*Offset > Textbox.w);
-		}
-		else if(w-*Offset < 0.0f)
-		{
-			// move to the right
-			do
-			{
-				*Offset = maximum(0.0f, *Offset-Textbox.w/3);
-			}
-			while(w-*Offset < 0.0f);
-		}
-	}
-	UI()->ClipEnable(pRect);
-	Textbox.x -= *Offset;
-
-	UI()->DoLabel(&Textbox, pDisplayStr, FontSize, CUI::ALIGN_LEFT);
-
-	// render the cursor
-	if(UI()->LastActiveItem() == pID && !JustGotActive)
-	{
-		float w = TextRender()->TextWidth(FontSize, pDisplayStr, s_AtIndex);
-		Textbox = *pRect;
-		Textbox.VSplitLeft(2.0f, 0, &Textbox);
-		Textbox.x += (w-*Offset-TextRender()->TextWidth(FontSize, "|", -1)/2);
-
-		if((2*time_get()/time_freq()) % 2)	// make it blink
-			UI()->DoLabel(&Textbox, "|", FontSize, CUI::ALIGN_LEFT);
-	}
-	UI()->ClipDisable();
-
-	return ReturnValue;
-}
-
 vec4 CEditor::GetButtonColor(const void *pID, int Checked)
 {
 	if(Checked < 0)
@@ -477,18 +321,10 @@ int CEditor::DoButton_Editor_Common(const void *pID, const char *pText, int Chec
 	return 0;
 }
 
-
 int CEditor::DoButton_Editor(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
 {
 	pRect->Draw(GetButtonColor(pID, Checked), 3.0f);
-
-	static CTextCursor s_Cursor(10.0f);
-	s_Cursor.MoveTo(pRect->x + pRect->w/2, pRect->y + pRect->h/2);
-	s_Cursor.Reset();
-	s_Cursor.m_MaxWidth = pRect->w;
-	s_Cursor.m_MaxLines = 1;
-	s_Cursor.m_Align = TEXTALIGN_MC;
-	TextRender()->TextOutlined(&s_Cursor, pText, -1);
+	UI()->DoLabel(pRect, pText, 10.0f, TEXTALIGN_MC);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
@@ -499,40 +335,19 @@ int CEditor::DoButton_Image(const void *pID, const char *pText, int Checked, con
 	if(!Used)
 		ButtonColor *= vec4(0.5f, 0.5f, 0.5f, 1.0f);
 
+	const float FontSize = clamp(8.0f * pRect->w / TextRender()->TextWidth(10.0f, pText, -1), 6.0f, 10.0f);
 	pRect->Draw(ButtonColor, 3.0f);
-
-	static CTextCursor s_Cursor;
-	s_Cursor.MoveTo(pRect->x + pRect->w/2, pRect->y + pRect->h/2);
-	s_Cursor.Reset();
-	s_Cursor.m_FontSize = clamp(8.0f * pRect->w / TextRender()->TextWidth(10.0f, pText, -1), 6.0f, 10.0f);
-	s_Cursor.m_MaxWidth = pRect->w;
-	s_Cursor.m_MaxLines = 1;
-	s_Cursor.m_Align = TEXTALIGN_MC;
-	TextRender()->TextOutlined(&s_Cursor, pText, -1);
-	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
-}
-
-int CEditor::DoButton_File(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
-{
-	if(Checked)
-		pRect->Draw(GetButtonColor(pID, Checked), 3.0f);
-	else if(UI()->HotItem() == pID)
-		pRect->Draw(vec4(1,1,1,0.33f), 3.0f);
-
-	CUIRect t = *pRect;
-	t.VMargin(5.0f, &t);
-	UI()->DoLabel(&t, pText, 10, CUI::ALIGN_LEFT);
+	UI()->DoLabel(pRect, pText, FontSize, TEXTALIGN_MC);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
 int CEditor::DoButton_Menu(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
 {
-	CUIRect r = *pRect;
-	r.Draw(vec4(0.5f, 0.5f, 0.5f, 1.0f), 3.0f, CUIRect::CORNER_T);
+	pRect->Draw(vec4(0.5f, 0.5f, 0.5f, 1.0f), 3.0f, CUIRect::CORNER_T);
 
-	r = *pRect;
-	r.VMargin(5.0f, &r);
-	UI()->DoLabel(&r, pText, 10, CUI::ALIGN_LEFT);
+	CUIRect Label = *pRect;
+	Label.VMargin(5.0f, &Label);
+	UI()->DoLabel(&Label, pText, 10.0f, TEXTALIGN_ML);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
@@ -541,45 +356,37 @@ int CEditor::DoButton_MenuItem(const void *pID, const char *pText, int Checked, 
 	if(UI()->HotItem() == pID || Checked)
 		pRect->Draw(GetButtonColor(pID, Checked), 3.0f);
 
-	CUIRect t = *pRect;
-	t.VMargin(5.0f, &t);
-	static CTextCursor s_Cursor(10.0f);
-	s_Cursor.Reset();
-	s_Cursor.MoveTo(t.x, t.y - 1.0f);
-	s_Cursor.m_MaxWidth = t.w;
-	TextRender()->TextOutlined(&s_Cursor, pText, -1);
+	CUIRect Label = *pRect;
+	Label.VMargin(5.0f, &Label);
+	UI()->DoLabel(&Label, pText, 10.0f, TEXTALIGN_ML);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
 int CEditor::DoButton_Tab(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
 {
 	pRect->Draw(GetButtonColor(pID, Checked), 5.0f, CUIRect::CORNER_T);
-	CUIRect NewRect = *pRect;
-	NewRect.y += NewRect.h/2.0f-7.0f;
-	UI()->DoLabel(&NewRect, pText, 10, CUI::ALIGN_CENTER);
+	UI()->DoLabel(pRect, pText, 10.0f, TEXTALIGN_MC);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
 int CEditor::DoButton_Ex(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip, int Corners, float FontSize)
 {
 	pRect->Draw(GetButtonColor(pID, Checked), 3.0f, Corners);
-	CUIRect NewRect = *pRect;
-	NewRect.HMargin(NewRect.h/2.0f-FontSize/2.0f-1.0f, &NewRect);
-	UI()->DoLabel(&NewRect, pText, FontSize, CUI::ALIGN_CENTER);
+	UI()->DoLabel(pRect, pText, FontSize, TEXTALIGN_MC);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
 int CEditor::DoButton_ButtonInc(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
 {
 	pRect->Draw(GetButtonColor(pID, Checked), 3.0f, CUIRect::CORNER_R);
-	UI()->DoLabel(pRect, pText?pText:"+", 10, CUI::ALIGN_CENTER);
+	UI()->DoLabel(pRect, pText?pText:"+", 10.0f, TEXTALIGN_MC);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
 int CEditor::DoButton_ButtonDec(const void *pID, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
 {
 	pRect->Draw(GetButtonColor(pID, Checked), 3.0f, CUIRect::CORNER_L);
-	UI()->DoLabel(pRect, pText?pText:"-", 10, CUI::ALIGN_CENTER);
+	UI()->DoLabel(pRect, pText?pText:"-", 10.0f, TEXTALIGN_MC);
 	return DoButton_Editor_Common(pID, pText, Checked, pRect, Flags, pToolTip);
 }
 
@@ -695,7 +502,7 @@ int CEditor::UiDoValueSelector(void *pID, CUIRect *pRect, const char *pLabel, in
 	str_format(aBuf, sizeof(aBuf),"%s %d", pLabel, Current);
 	pRect->Draw(GetButtonColor(pID, 0));
 	pRect->y += pRect->h/2.0f-7.0f;
-	UI()->DoLabel(pRect, aBuf, 10, CUI::ALIGN_CENTER);
+	UI()->DoLabel(pRect, aBuf, 10, TEXTALIGN_CENTER);
 
 	return Current;
 }
@@ -1226,8 +1033,7 @@ void CEditor::DoQuad(CQuad *q, int Index)
 		{
 			if(!UI()->MouseButton(1))
 			{
-				static int s_QuadPopupID = 0;
-				UiInvokePopupMenu(&s_QuadPopupID, 0, UI()->MouseX(), UI()->MouseY(), 120, 180, PopupQuad);
+				UI()->DoPopupMenu(UI()->MouseX(), UI()->MouseY(), 120, 180, this, PopupQuad);
 				m_LockMouse = false;
 				s_Operation = OP_NONE;
 				UI()->SetActiveItem(0);
@@ -1403,8 +1209,7 @@ void CEditor::DoQuadPoint(CQuad *pQuad, int QuadIndex, int V)
 		{
 			if(!UI()->MouseButton(1))
 			{
-				static int s_PointPopupID = 0;
-				UiInvokePopupMenu(&s_PointPopupID, 0, UI()->MouseX(), UI()->MouseY(), 120, 150, PopupPoint);
+				UI()->DoPopupMenu(UI()->MouseX(), UI()->MouseY(), 120, 150, this, PopupPoint);
 				UI()->SetActiveItem(0);
 			}
 		}
@@ -2063,7 +1868,7 @@ void CEditor::DoMapEditor(CUIRect View)
 									// move up
 									if(m_SelectedQuad < pQuadLayer->m_lQuads.size()-1)
 									{
-										tl_swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad+1]);
+										std::swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad+1]);
 										m_SelectedQuad++;
 									}
 								}
@@ -2072,7 +1877,7 @@ void CEditor::DoMapEditor(CUIRect View)
 									// move down
 									if(m_SelectedQuad > 0)
 									{
-										tl_swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad-1]);
+										std::swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad-1]);
 										m_SelectedQuad--;
 									}
 								}
@@ -2082,7 +1887,7 @@ void CEditor::DoMapEditor(CUIRect View)
 									int NumQuads = pQuadLayer->m_lQuads.size();
 									while(m_SelectedQuad < NumQuads-1)
 									{
-										tl_swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad+1]);
+										std::swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad+1]);
 										m_SelectedQuad++;
 									}
 								}
@@ -2091,7 +1896,7 @@ void CEditor::DoMapEditor(CUIRect View)
 									// move to back
 									while(m_SelectedQuad > 0)
 									{
-										tl_swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad-1]);
+										std::swap(pQuadLayer->m_lQuads[m_SelectedQuad], pQuadLayer->m_lQuads[m_SelectedQuad-1]);
 										m_SelectedQuad--;
 									}
 								}
@@ -2335,7 +2140,7 @@ int CEditor::DoProperties(CUIRect *pToolBox, CProperty *pProps, int *pIDs, int *
 		CUIRect Label, Shifter;
 		Slot.VSplitMid(&Label, &Shifter);
 		Shifter.HMargin(1.0f, &Shifter);
-		UI()->DoLabel(&Label, pProps[i].m_pName, 10.0f, CUI::ALIGN_LEFT);
+		UI()->DoLabel(&Label, pProps[i].m_pName, 10.0f, TEXTALIGN_LEFT);
 
 		if(pProps[i].m_Type == PROPTYPE_INT_STEP)
 		{
@@ -2346,7 +2151,7 @@ int CEditor::DoProperties(CUIRect *pToolBox, CProperty *pProps, int *pIDs, int *
 			Shifter.VSplitLeft(10.0f, &Dec, &Shifter);
 			str_format(aBuf, sizeof(aBuf),"%d", pProps[i].m_Value);
 			Shifter.Draw(vec4(1,1,1,0.5f), 0.0f, CUIRect::CORNER_NONE);
-			UI()->DoLabel(&Shifter, aBuf, 10.0f,CUI::ALIGN_CENTER);
+			UI()->DoLabel(&Shifter, aBuf, 10.0f,TEXTALIGN_CENTER);
 
 			if(DoButton_ButtonDec(&pIDs[i], 0, 0, &Dec, 0, "Decrease"))
 			{
@@ -2416,14 +2221,13 @@ int CEditor::DoProperties(CUIRect *pToolBox, CProperty *pProps, int *pIDs, int *
 				((pProps[i].m_Value >> s_aShift[2])&0xff)/255.0f,
 				1.0f);
 
-			static int s_ColorPicker, s_ColorPickerID;
-
 			ColorBox.Draw(Color, 0.0f, CUIRect::CORNER_NONE);
+			static int s_ColorPicker;
 			if(DoButton_Editor_Common(&s_ColorPicker, 0x0, 0, &ColorBox, 0, 0x0))
 			{
 				m_InitialPickerColor = RgbToHsv(vec3(Color.r, Color.g, Color.b));
 				m_SelectedPickerColor = m_InitialPickerColor;
-				UiInvokePopupMenu(&s_ColorPickerID, 0, UI()->MouseX(), UI()->MouseY(), 180, 180, PopupColorPicker);
+				UI()->DoPopupMenu(UI()->MouseX(), UI()->MouseY(), 180, 180, this, PopupColorPicker);
 			}
 
 			if(m_InitialPickerColor != m_SelectedPickerColor)
@@ -2464,11 +2268,11 @@ int CEditor::DoProperties(CUIRect *pToolBox, CProperty *pProps, int *pIDs, int *
 			Left.VSplitLeft(10.0f, &Left, &Shifter);
 			Shifter.VSplitRight(10.0f, &Shifter, &Right);
 			Shifter.Draw(vec4(1,1,1,0.5f), 0.0f, CUIRect::CORNER_NONE);
-			UI()->DoLabel(&Shifter, "X", 10.0f, CUI::ALIGN_CENTER);
+			UI()->DoLabel(&Shifter, "X", 10.0f, TEXTALIGN_CENTER);
 			Up.VSplitLeft(10.0f, &Up, &Shifter);
 			Shifter.VSplitRight(10.0f, &Shifter, &Down);
 			Shifter.Draw(vec4(1,1,1,0.5f), 0.0f, CUIRect::CORNER_NONE);
-			UI()->DoLabel(&Shifter, "Y", 10.0f, CUI::ALIGN_CENTER);
+			UI()->DoLabel(&Shifter, "Y", 10.0f, TEXTALIGN_CENTER);
 			if(DoButton_ButtonDec(&pIDs[i], "-", 0, &Left, 0, "Left"))
 			{
 				*pNewVal = 1;
@@ -2495,163 +2299,118 @@ int CEditor::DoProperties(CUIRect *pToolBox, CProperty *pProps, int *pIDs, int *
 	return Change;
 }
 
-void CEditor::RenderLayers(CUIRect ToolBox, CUIRect View)
+void CEditor::RenderLayers(CUIRect LayersBox)
 {
-	CUIRect LayersBox = ToolBox;
-	CUIRect Slot, Button;
+	const float RowHeight = 12.0f;
 	char aBuf[64];
 
-	float LayersHeight = 12.0f;	 // Height of AddGroup button
-	static float s_ScrollValue = 0;
-
-	for(int g = 0; g < m_Map.m_lGroups.size(); g++)
-	{
-		// Each group is 19.0f
-		// Each layer is 14.0f
-		LayersHeight += 19.0f;
-		if(!m_Map.m_lGroups[g]->m_Collapse)
-			LayersHeight += m_Map.m_lGroups[g]->m_lLayers.size() * 14.0f;
-	}
-
-	float ScrollDifference = LayersHeight - LayersBox.h;
-
-	if(LayersHeight > LayersBox.h)	// Do we even need a scrollbar?
-	{
-		CUIRect Scroll;
-		LayersBox.VSplitRight(15.0f, &LayersBox, &Scroll);
-		LayersBox.VSplitRight(3.0f, &LayersBox, 0);	// extra spacing
-		s_ScrollValue = UI()->DoScrollbarV(&s_ScrollValue, &Scroll, s_ScrollValue);
-
-		if(UI()->MouseInside(&Scroll) || UI()->MouseInside(&LayersBox))
-		{
-			int ScrollNum = (int)((LayersHeight-LayersBox.h)/15.0f)+1;
-			if(ScrollNum > 0)
-			{
-				if(Input()->KeyPress(KEY_MOUSE_WHEEL_UP))
-					s_ScrollValue = clamp(s_ScrollValue - 1.0f/ScrollNum, 0.0f, 1.0f);
-				if(Input()->KeyPress(KEY_MOUSE_WHEEL_DOWN))
-					s_ScrollValue = clamp(s_ScrollValue + 1.0f/ScrollNum, 0.0f, 1.0f);
-			}
-		}
-	}
-
-	float LayerStartAt = ScrollDifference * s_ScrollValue;
-	if(LayerStartAt < 0.0f)
-		LayerStartAt = 0.0f;
-
-	float LayerStopAt = LayersHeight - ScrollDifference * (1 - s_ScrollValue);
-	float LayerCur = 0;
+	static CScrollRegion s_ScrollRegion;
+	vec2 ScrollOffset(0.0f, 0.0f);
+	CScrollRegionParams ScrollParams;
+	ScrollParams.m_ClipBgColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+	ScrollParams.m_ScrollbarBgColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+	ScrollParams.m_ScrollbarWidth = 10.0f;
+	ScrollParams.m_ScrollbarMargin = 3.0f;
+	ScrollParams.m_ScrollUnit = RowHeight * 5;
+	s_ScrollRegion.Begin(&LayersBox, &ScrollOffset, &ScrollParams);
+	LayersBox.y += ScrollOffset.y;
 
 	// render layers
+	for(int g = 0; g < m_Map.m_lGroups.size(); g++)
 	{
-		for(int g = 0; g < m_Map.m_lGroups.size(); g++)
+		CUIRect Slot, VisibleToggle, SaveCheck;
+		LayersBox.HSplitTop(RowHeight, &Slot, &LayersBox);
+		s_ScrollRegion.AddRect(Slot);
+
+		if(!s_ScrollRegion.IsRectClipped(Slot))
 		{
-			if(LayerCur > LayerStopAt)
-				break;
-			else if(LayerCur + m_Map.m_lGroups[g]->m_lLayers.size() * 14.0f + 19.0f < LayerStartAt)
+			Slot.VSplitLeft(12.0f, &VisibleToggle, &Slot);
+			if(DoButton_Ex(&m_Map.m_lGroups[g]->m_Visible, m_Map.m_lGroups[g]->m_Visible ? "V" : "H", m_Map.m_lGroups[g]->m_Collapse ? 1 : 0, &VisibleToggle, 0, "Toggle group visibility", CUIRect::CORNER_L))
+				m_Map.m_lGroups[g]->m_Visible = !m_Map.m_lGroups[g]->m_Visible;
+
+			Slot.VSplitRight(12.0f, &Slot, &SaveCheck);
+			if(DoButton_Ex(&m_Map.m_lGroups[g]->m_SaveToMap, "S", m_Map.m_lGroups[g]->m_SaveToMap, &SaveCheck, 0, "Enable/disable group for saving", CUIRect::CORNER_R))
+				if(!m_Map.m_lGroups[g]->m_GameGroup)
+					m_Map.m_lGroups[g]->m_SaveToMap = !m_Map.m_lGroups[g]->m_SaveToMap;
+
+			str_format(aBuf, sizeof(aBuf), "#%d %s", g, m_Map.m_lGroups[g]->m_aName);
+			const float GroupFontSize = clamp(10.0f * Slot.w / TextRender()->TextWidth(10.0f, aBuf, -1), 6.0f, 10.0f);
+			const char *pGroupTooltip = m_Map.m_lGroups[g]->m_Collapse ? "Select group. Double click to expand." : "Select group. Double click to collapse.";
+			if(int Result = DoButton_Ex(&m_Map.m_lGroups[g], aBuf, g == m_SelectedGroup, &Slot, BUTTON_CONTEXT, pGroupTooltip, 0, GroupFontSize))
 			{
-				LayerCur += m_Map.m_lGroups[g]->m_lLayers.size() * 14.0f + 19.0f;
-				continue;
+				m_SelectedGroup = g;
+				m_SelectedLayer = 0;
+
+				if(Result == 2)
+					UI()->DoPopupMenu(UI()->MouseX(), UI()->MouseY(), 145, 220, this, PopupGroup);
+
+				if(m_Map.m_lGroups[g]->m_lLayers.size() && Input()->MouseDoubleClick())
+					m_Map.m_lGroups[g]->m_Collapse ^= 1;
 			}
-
-			CUIRect VisibleToggle, SaveCheck;
-			if(LayerCur >= LayerStartAt)
-			{
-				LayersBox.HSplitTop(12.0f, &Slot, &LayersBox);
-				Slot.VSplitLeft(12, &VisibleToggle, &Slot);
-				if(DoButton_Ex(&m_Map.m_lGroups[g]->m_Visible, m_Map.m_lGroups[g]->m_Visible?"V":"H", m_Map.m_lGroups[g]->m_Collapse ? 1 : 0, &VisibleToggle, 0, "Toggle group visibility", CUIRect::CORNER_L))
-					m_Map.m_lGroups[g]->m_Visible = !m_Map.m_lGroups[g]->m_Visible;
-
-				Slot.VSplitRight(12.0f, &Slot, &SaveCheck);
-				if(DoButton_Ex(&m_Map.m_lGroups[g]->m_SaveToMap, "S", m_Map.m_lGroups[g]->m_SaveToMap, &SaveCheck, 0, "Enable/disable group for saving", CUIRect::CORNER_R))
-					if(!m_Map.m_lGroups[g]->m_GameGroup)
-						m_Map.m_lGroups[g]->m_SaveToMap = !m_Map.m_lGroups[g]->m_SaveToMap;
-
-				str_format(aBuf, sizeof(aBuf),"#%d %s", g, m_Map.m_lGroups[g]->m_aName);
-				const float FontSize = clamp(10.0f * Slot.w / TextRender()->TextWidth(10.0f, aBuf, -1), 6.0f, 10.0f);
-
-				if(int Result = DoButton_Ex(&m_Map.m_lGroups[g], aBuf, g==m_SelectedGroup, &Slot,
-					BUTTON_CONTEXT, m_Map.m_lGroups[g]->m_Collapse ? "Select group. Double click to expand." : "Select group. Double click to collapse.", 0, FontSize))
-				{
-					m_SelectedGroup = g;
-					m_SelectedLayer = 0;
-
-					static int s_GroupPopupId = 0;
-					if(Result == 2)
-						UiInvokePopupMenu(&s_GroupPopupId, 0, UI()->MouseX(), UI()->MouseY(), 145, 220, PopupGroup);
-
-					if(m_Map.m_lGroups[g]->m_lLayers.size() && Input()->MouseDoubleClick())
-						m_Map.m_lGroups[g]->m_Collapse ^= 1;
-				}
-				LayersBox.HSplitTop(2.0f, &Slot, &LayersBox);
-			}
-			LayerCur += 14.0f;
-
-			for(int i = 0; i < m_Map.m_lGroups[g]->m_lLayers.size(); i++)
-			{
-				if(LayerCur > LayerStopAt)
-					break;
-				else if(LayerCur < LayerStartAt)
-				{
-					LayerCur += 14.0f;
-					continue;
-				}
-
-				if(m_Map.m_lGroups[g]->m_Collapse)
-					continue;
-
-				//visible
-				LayersBox.HSplitTop(12.0f, &Slot, &LayersBox);
-				Slot.VSplitLeft(12.0f, 0, &Button);
-				Button.VSplitLeft(15, &VisibleToggle, &Button);
-
-				if(DoButton_Ex(&m_Map.m_lGroups[g]->m_lLayers[i]->m_Visible, m_Map.m_lGroups[g]->m_lLayers[i]->m_Visible?"V":"H", 0, &VisibleToggle, 0, "Toggle layer visibility", CUIRect::CORNER_L))
-					m_Map.m_lGroups[g]->m_lLayers[i]->m_Visible = !m_Map.m_lGroups[g]->m_lLayers[i]->m_Visible;
-
-				Button.VSplitRight(12.0f, &Button, &SaveCheck);
-				if(DoButton_Ex(&m_Map.m_lGroups[g]->m_lLayers[i]->m_SaveToMap, "S", m_Map.m_lGroups[g]->m_lLayers[i]->m_SaveToMap, &SaveCheck, 0, "Enable/disable layer for saving", CUIRect::CORNER_R))
-					if(m_Map.m_lGroups[g]->m_lLayers[i] != m_Map.m_pGameLayer)
-						m_Map.m_lGroups[g]->m_lLayers[i]->m_SaveToMap = !m_Map.m_lGroups[g]->m_lLayers[i]->m_SaveToMap;
-
-				if(m_Map.m_lGroups[g]->m_lLayers[i]->m_aName[0])
-					str_format(aBuf, sizeof(aBuf), "%s", m_Map.m_lGroups[g]->m_lLayers[i]->m_aName);
-				else if(m_Map.m_lGroups[g]->m_lLayers[i]->m_Type == LAYERTYPE_TILES)
-					str_copy(aBuf, "Tiles", sizeof(aBuf));
-				else
-					str_copy(aBuf, "Quads", sizeof(aBuf));
-
-				const float FontSize = clamp(10.0f * Button.w / TextRender()->TextWidth(10.0f, aBuf, -1), 6.0f, 10.0f);
-
-				if(int Result = DoButton_Ex(m_Map.m_lGroups[g]->m_lLayers[i], aBuf, g==m_SelectedGroup&&i==m_SelectedLayer, &Button,
-					BUTTON_CONTEXT, "Select layer.", 0, FontSize))
-				{
-					m_SelectedLayer = i;
-					m_SelectedGroup = g;
-					static int s_LayerPopupID = 0;
-					if(Result == 2)
-						UiInvokePopupMenu(&s_LayerPopupID, 0, UI()->MouseX(), UI()->MouseY(), 120, 245, PopupLayer);
-				}
-
-				LayerCur += 14.0f;
-				LayersBox.HSplitTop(2.0f, &Slot, &LayersBox);
-			}
-			if(LayerCur > LayerStartAt && LayerCur < LayerStopAt)
-				LayersBox.HSplitTop(5.0f, &Slot, &LayersBox);
-			LayerCur += 5.0f;
 		}
+
+		LayersBox.HSplitTop(2.0f, &Slot, &LayersBox);
+		s_ScrollRegion.AddRect(Slot);
+
+		for(int l = 0; l < m_Map.m_lGroups[g]->m_lLayers.size(); l++)
+		{
+			if(m_Map.m_lGroups[g]->m_Collapse)
+				continue;
+
+			LayersBox.HSplitTop(RowHeight+2.0f, &Slot, &LayersBox);
+			s_ScrollRegion.AddRect(Slot);
+			if(s_ScrollRegion.IsRectClipped(Slot))
+				continue;
+			Slot.HSplitTop(RowHeight, &Slot, 0);
+
+			Slot.VSplitLeft(12.0f, 0, &Slot);
+			Slot.VSplitLeft(12.0f, &VisibleToggle, &Slot);
+
+			if(DoButton_Ex(&m_Map.m_lGroups[g]->m_lLayers[l]->m_Visible, m_Map.m_lGroups[g]->m_lLayers[l]->m_Visible ? "V" : "H", 0, &VisibleToggle, 0, "Toggle layer visibility", CUIRect::CORNER_L))
+				m_Map.m_lGroups[g]->m_lLayers[l]->m_Visible = !m_Map.m_lGroups[g]->m_lLayers[l]->m_Visible;
+
+			Slot.VSplitRight(12.0f, &Slot, &SaveCheck);
+			if(DoButton_Ex(&m_Map.m_lGroups[g]->m_lLayers[l]->m_SaveToMap, "S", m_Map.m_lGroups[g]->m_lLayers[l]->m_SaveToMap, &SaveCheck, 0, "Enable/disable layer for saving", CUIRect::CORNER_R))
+				if(m_Map.m_lGroups[g]->m_lLayers[l] != m_Map.m_pGameLayer)
+					m_Map.m_lGroups[g]->m_lLayers[l]->m_SaveToMap = !m_Map.m_lGroups[g]->m_lLayers[l]->m_SaveToMap;
+
+			const char *pGroupLabel;
+			if(m_Map.m_lGroups[g]->m_lLayers[l]->m_aName[0])
+				pGroupLabel = m_Map.m_lGroups[g]->m_lLayers[l]->m_aName;
+			else if(m_Map.m_lGroups[g]->m_lLayers[l]->m_Type == LAYERTYPE_TILES)
+				pGroupLabel = "Tiles";
+			else
+				pGroupLabel = "Quads";
+
+			const float LayerFontSize = clamp(10.0f * Slot.w / TextRender()->TextWidth(10.0f, pGroupLabel, -1), 6.0f, 10.0f);
+			if(int Result = DoButton_Ex(m_Map.m_lGroups[g]->m_lLayers[l], pGroupLabel, g == m_SelectedGroup && l == m_SelectedLayer, &Slot, BUTTON_CONTEXT, "Select layer.", 0, LayerFontSize))
+			{
+				m_SelectedLayer = l;
+				m_SelectedGroup = g;
+				if(Result == 2)
+					UI()->DoPopupMenu(UI()->MouseX(), UI()->MouseY(), 120, 245, this, PopupLayer);
+			}
+		}
+
+		LayersBox.HSplitTop(5.0f, &Slot, &LayersBox);
+		s_ScrollRegion.AddRect(Slot);
 	}
 
-	if(LayerCur <= LayerStopAt)
+	CUIRect AddGroupButton;
+	LayersBox.HSplitTop(RowHeight + 1.0f, &AddGroupButton, &LayersBox);
+	s_ScrollRegion.AddRect(AddGroupButton);
+	if(!s_ScrollRegion.IsRectClipped(AddGroupButton))
 	{
-		LayersBox.HSplitTop(12.0f, &Slot, &LayersBox);
-
-		static int s_NewGroupButton = 0;
-		if(DoButton_Editor(&s_NewGroupButton, "Add group", 0, &Slot, 0, "Adds a new group"))
+		AddGroupButton.HSplitTop(RowHeight, &AddGroupButton, 0);
+		static int s_AddGroupButton = 0;
+		if(DoButton_Editor(&s_AddGroupButton, "Add group", 0, &AddGroupButton, 0, "Adds a new group"))
 		{
 			m_Map.NewGroup();
 			m_SelectedGroup = m_Map.m_lGroups.size()-1;
 		}
 	}
+
+	s_ScrollRegion.End();
 }
 
 void CEditor::ReplaceImage(const char *pFileName, int StorageType, void *pUser)
@@ -2787,69 +2546,39 @@ void CEditor::SortImages()
 
 void CEditor::RenderImagesList(CUIRect ToolBox)
 {
-	static float s_ScrollValue = 0.0f;
-	const float RowHeight = 14.0f;
-	const float HeaderHeight = RowHeight + 1.0f;
-	const float HeaderSeparatorHeight = 5.0f;
-	const float AddButtonHeight = 17.0f;
-	const float ImagesHeight = 2 * (HeaderHeight + HeaderSeparatorHeight) + RowHeight * m_Map.m_lImages.size() + AddButtonHeight;
-	const float ScrollDifference = maximum(ImagesHeight - ToolBox.h, 0.0f);
+	const float RowHeight = 12.0f;
 
-	if(ScrollDifference > 0) // Do we even need a scrollbar?
-	{
-		CUIRect Scroll;
-		ToolBox.VSplitRight(15.0f, &ToolBox, &Scroll);
-		ToolBox.VSplitRight(3.0f, &ToolBox, 0);	// extra spacing
-		s_ScrollValue = UI()->DoScrollbarV(&s_ScrollValue, &Scroll, s_ScrollValue);
-		if(UI()->MouseInside(&Scroll) || UI()->MouseInside(&ToolBox))
-		{
-			int ScrollNum = (int)((ImagesHeight-ToolBox.h)/RowHeight)+1;
-			if(ScrollNum > 0)
-			{
-				if(Input()->KeyPress(KEY_MOUSE_WHEEL_UP))
-					s_ScrollValue = clamp(s_ScrollValue - 1.0f/ScrollNum, 0.0f, 1.0f);
-				if(Input()->KeyPress(KEY_MOUSE_WHEEL_DOWN))
-					s_ScrollValue = clamp(s_ScrollValue + 1.0f/ScrollNum, 0.0f, 1.0f);
-			}
-		}
-	}
-	else
-		s_ScrollValue = 0.0f;
-
-	const float ImageStartAt = ScrollDifference * s_ScrollValue;
-	const float ImageStopAt = ImagesHeight + ScrollDifference * (s_ScrollValue - 1.0f);
-	float ImageCur = 0.0f;
+	static CScrollRegion s_ScrollRegion;
+	vec2 ScrollOffset(0.0f, 0.0f);
+	CScrollRegionParams ScrollParams;
+	ScrollParams.m_ClipBgColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+	ScrollParams.m_ScrollbarBgColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+	ScrollParams.m_ScrollbarWidth = 10.0f;
+	ScrollParams.m_ScrollbarMargin = 3.0f;
+	ScrollParams.m_ScrollUnit = RowHeight * 5;
+	s_ScrollRegion.Begin(&ToolBox, &ScrollOffset, &ScrollParams);
+	ToolBox.y += ScrollOffset.y;
 
 	for(int e = 0; e < 2; e++) // two passes, first embedded, then external
 	{
-		if(ImageCur + HeaderHeight > ImageStopAt)
-			return;
-
 		CUIRect Slot;
-		if(ImageCur >= ImageStartAt)
-		{
-			ToolBox.HSplitTop(HeaderHeight, &Slot, &ToolBox);
-			UI()->DoLabel(&Slot, e == 0 ? "Embedded" : "External", 12.0f, CUI::ALIGN_CENTER);
-		}
-		ImageCur += HeaderHeight;
+		ToolBox.HSplitTop(RowHeight+3.0f, &Slot, &ToolBox);
+		s_ScrollRegion.AddRect(Slot);
+		if(!s_ScrollRegion.IsRectClipped(Slot))
+			UI()->DoLabel(&Slot, e == 0 ? "Embedded" : "External", 12.0f, TEXTALIGN_CENTER);
 
 		for(int i = 0; i < m_Map.m_lImages.size(); i++)
 		{
 			if((e && !m_Map.m_lImages[i]->m_External) || (!e && m_Map.m_lImages[i]->m_External))
 				continue;
 
-			if(ImageCur + RowHeight > ImageStopAt)
-				return;
-			else if(ImageCur < ImageStartAt)
-			{
-				ImageCur += RowHeight;
+			ToolBox.HSplitTop(RowHeight+2.0f, &Slot, &ToolBox);
+			s_ScrollRegion.AddRect(Slot);
+			if(s_ScrollRegion.IsRectClipped(Slot))
 				continue;
-			}
-			ImageCur += RowHeight;
+			Slot.HSplitTop(RowHeight, &Slot, 0);
 
-			ToolBox.HSplitTop(12.0f, &Slot, &ToolBox);
-
-			// check if images is used
+			// check if image is used
 			bool Used = false;
 			for(int g = 0; !Used && (g < m_Map.m_lGroups.size()); g++)
 			{
@@ -2858,14 +2587,12 @@ void CEditor::RenderImagesList(CUIRect ToolBox)
 				{
 					if(pGroup->m_lLayers[l]->m_Type == LAYERTYPE_TILES)
 					{
-						CLayerTiles *pLayer = static_cast<CLayerTiles *>(pGroup->m_lLayers[l]);
-						if(pLayer->m_Image == i)
+						if(static_cast<CLayerTiles *>(pGroup->m_lLayers[l])->m_Image == i)
 							Used = true;
 					}
 					else if(pGroup->m_lLayers[l]->m_Type == LAYERTYPE_QUADS)
 					{
-						CLayerQuads *pLayer = static_cast<CLayerQuads *>(pGroup->m_lLayers[l]);
-						if(pLayer->m_Image == i)
+						if(static_cast<CLayerQuads *>(pGroup->m_lLayers[l])->m_Image == i)
 							Used = true;
 					}
 				}
@@ -2875,36 +2602,37 @@ void CEditor::RenderImagesList(CUIRect ToolBox)
 			{
 				m_SelectedImage = i;
 
-				static int s_PopupImageID = 0;
 				if(Result == 2)
-					UiInvokePopupMenu(&s_PopupImageID, 0, UI()->MouseX(), UI()->MouseY(), 120, 80, PopupImage);
+					UI()->DoPopupMenu(UI()->MouseX(), UI()->MouseY(), 120, 80, this, PopupImage);
 			}
-
-			ToolBox.HSplitTop(2.0f, 0, &ToolBox);
 		}
 
 		// separator
-		if(ImageCur + HeaderSeparatorHeight > ImageStopAt)
-			return;
-		ToolBox.HSplitTop(HeaderSeparatorHeight, &Slot, &ToolBox);
-		ImageCur += HeaderSeparatorHeight;
-		IGraphics::CLineItem LineItem(Slot.x, Slot.y+Slot.h/2, Slot.x+Slot.w, Slot.y+Slot.h/2);
-		Graphics()->TextureClear();
-		Graphics()->LinesBegin();
-		Graphics()->LinesDraw(&LineItem, 1);
-		Graphics()->LinesEnd();
+		ToolBox.HSplitTop(5.0f, &Slot, &ToolBox);
+		s_ScrollRegion.AddRect(Slot);
+		if(!s_ScrollRegion.IsRectClipped(Slot))
+		{
+			IGraphics::CLineItem LineItem(Slot.x, Slot.y+Slot.h/2, Slot.x+Slot.w, Slot.y+Slot.h/2);
+			Graphics()->TextureClear();
+			Graphics()->LinesBegin();
+			Graphics()->LinesDraw(&LineItem, 1);
+			Graphics()->LinesEnd();
+		}
 	}
 
-	if(ImageCur + AddButtonHeight > ImageStopAt)
-		return;
-
 	// new image
-	static int s_NewImageButton = 0;
-	CUIRect Slot;
-	ToolBox.HSplitTop(5.0f, &Slot, &ToolBox);
-	ToolBox.HSplitTop(12.0f, &Slot, &ToolBox);
-	if(DoButton_Editor(&s_NewImageButton, "Add", 0, &Slot, 0, "Load a new image to use in the map"))
-		InvokeFileDialog(IStorage::TYPE_ALL, FILETYPE_IMG, "Add Image", "Add", "mapres", "", AddImage, this);
+	static int s_AddImageButton = 0;
+	CUIRect AddImageButton;
+	ToolBox.HSplitTop(5.0f + RowHeight + 1.0f, &AddImageButton, &ToolBox);
+	s_ScrollRegion.AddRect(AddImageButton);
+	if(!s_ScrollRegion.IsRectClipped(AddImageButton))
+	{
+		AddImageButton.HSplitTop(5.0f, 0, &AddImageButton);
+		AddImageButton.HSplitTop(RowHeight, &AddImageButton, 0);
+		if(DoButton_Editor(&s_AddImageButton, "Add", 0, &AddImageButton, 0, "Load a new image to use in the map"))
+			InvokeFileDialog(IStorage::TYPE_ALL, FILETYPE_IMG, "Add Image", "Add", "mapres", "", AddImage, this);
+	}
+	s_ScrollRegion.End();
 }
 
 void CEditor::RenderSelectedImage(CUIRect View)
@@ -2956,44 +2684,9 @@ static int EditorListdirCallback(const char *pName, int IsDir, int StorageType, 
 	Item.m_IsDir = IsDir != 0;
 	Item.m_IsLink = false;
 	Item.m_StorageType = StorageType;
-	pEditor->m_FileList.add(Item);
+	pEditor->m_CompleteFileList.add(Item);
 
 	return 0;
-}
-
-void CEditor::AddFileDialogEntry(int Index, CUIRect *pView)
-{
-	if(m_aFileDialogFilterString[0] && !str_find_nocase(m_FileList[Index].m_aName, m_aFileDialogFilterString))
-		return;
-	m_FilesCur++;
-	if(m_FilesCur-1 < m_FilesStartAt || m_FilesCur >= m_FilesStopAt)
-		return;
-
-	CUIRect Button, FileIcon;
-	pView->HSplitTop(15.0f, &Button, pView);
-	pView->HSplitTop(2.0f, 0, pView);
-	Button.VSplitLeft(Button.h, &FileIcon, &Button);
-	Button.VSplitLeft(5.0f, 0, &Button);
-
-	Graphics()->TextureSet(g_pData->m_aImages[IMAGE_FILEICONS].m_Id);
-	Graphics()->QuadsBegin();
-	RenderTools()->SelectSprite(m_FileList[Index].m_IsDir?SPRITE_FILE_FOLDER:SPRITE_FILE_MAP2);
-	IGraphics::CQuadItem QuadItem(FileIcon.x, FileIcon.y, FileIcon.w, FileIcon.h);
-	Graphics()->QuadsDrawTL(&QuadItem, 1);
-	Graphics()->QuadsEnd();
-
-	if(DoButton_File(&m_FileList[Index], m_FileList[Index].m_aName, m_FilesSelectedIndex == Index, &Button, 0, 0))
-	{
-		if(!m_FileList[Index].m_IsDir)
-			str_copy(m_aFileDialogFileName, m_FileList[Index].m_aFilename, sizeof(m_aFileDialogFileName));
-		else
-			m_aFileDialogFileName[0] = 0;
-		m_FilesSelectedIndex = Index;
-		m_PreviewImageIsLoaded = false;
-
-		if(Input()->MouseDoubleClick())
-			m_aFileDialogActivate = true;
-	}
 }
 
 void CEditor::RenderFileDialog()
@@ -3027,110 +2720,95 @@ void CEditor::RenderFileDialog()
 	// title
 	Title.Draw(vec4(1, 1, 1, 0.25f), 4.0f);
 	Title.VMargin(10.0f, &Title);
-	UI()->DoLabel(&Title, m_pFileDialogTitle, 12.0f, CUI::ALIGN_LEFT);
+	UI()->DoLabel(&Title, m_pFileDialogTitle, 12.0f, TEXTALIGN_LEFT);
 
 	// pathbox
 	char aPath[128], aBuf[128];
 	if(m_FilesSelectedIndex != -1)
-		Storage()->GetCompletePath(m_FileList[m_FilesSelectedIndex].m_StorageType, m_pFileDialogPath, aPath, sizeof(aPath));
+		Storage()->GetCompletePath(m_FilteredFileList[m_FilesSelectedIndex]->m_StorageType, m_pFileDialogPath, aPath, sizeof(aPath));
 	else
 		aPath[0] = 0;
 	str_format(aBuf, sizeof(aBuf), "Current path: %s", aPath);
-	UI()->DoLabel(&PathBox, aBuf, 10.0f, CUI::ALIGN_LEFT);
+	UI()->DoLabel(&PathBox, aBuf, 10.0f, TEXTALIGN_LEFT);
 
 	// filebox
+	static CListBox s_ListBox;
+
 	if(m_FileDialogStorageType == IStorage::TYPE_SAVE)
 	{
-		static float s_FileBoxID = 0;
-		UI()->DoLabel(&FileBoxLabel, "Filename:", 10.0f, CUI::ALIGN_LEFT);
-		if(DoEditBox(&s_FileBoxID, &FileBox, m_aFileDialogFileName, sizeof(m_aFileDialogFileName), 10.0f, &s_FileBoxID))
+		UI()->DoLabel(&FileBoxLabel, "Filename:", 10.0f, TEXTALIGN_LEFT);
+		if(DoEditBox(&m_FileDialogFileNameInput, &FileBox, 10.0f))
 		{
 			// remove '/' and '\'
-			for(int i = 0; m_aFileDialogFileName[i]; ++i)
-				if(m_aFileDialogFileName[i] == '/' || m_aFileDialogFileName[i] == '\\')
-					str_copy(&m_aFileDialogFileName[i], &m_aFileDialogFileName[i+1], (int)(sizeof(m_aFileDialogFileName))-i);
+			char aTempFileName[sizeof(m_aFileDialogFileName)];
+			str_copy(aTempFileName, m_aFileDialogFileName, sizeof(aTempFileName));
+			for(int i = 0; aTempFileName[i]; ++i)
+				if(aTempFileName[i] == '/' || aTempFileName[i] == '\\')
+					str_copy(&aTempFileName[i], &aTempFileName[i+1], (int)(sizeof(aTempFileName))-i);
+			m_FileDialogFileNameInput.Set(aTempFileName);
 			m_FilesSelectedIndex = -1;
+			m_aFilesSelectedName[0] = '\0';
+			// find first valid entry, if it exists
+			for(int i = 0; i < m_FilteredFileList.size(); i++)
+			{
+				if(str_comp_nocase(m_FilteredFileList[i]->m_aName, m_aFileDialogFileName) == 0)
+				{
+					m_FilesSelectedIndex = i;
+					str_copy(m_aFilesSelectedName, m_FilteredFileList[i]->m_aName, sizeof(m_aFilesSelectedName));
+					break;
+				}
+			}
+			if(m_FilesSelectedIndex >= 0)
+				s_ListBox.ScrollToSelected();
 		}
 	}
 	else
 	{
 		// render search bar
-		UI()->DoLabel(&FileBoxLabel, "Search:", 10.0f, CUI::ALIGN_LEFT);
-		if(DoEditBox(&m_FilesSearchBoxID, &FileBox, m_aFileDialogFilterString, sizeof(m_aFileDialogFilterString), 10.0f, &m_FilesSearchBoxID))
+		UI()->DoLabel(&FileBoxLabel, "Search:", 10.0f, TEXTALIGN_LEFT);
+		if(DoEditBox(&m_FileDialogFilterInput, &FileBox, 10.0f))
 		{
-			// reset scrolling
-			m_FileDialogScrollValue = 0;
-			if(m_FilesSelectedIndex == -1 || (m_FilesSelectedIndex >= 0 && m_aFileDialogFilterString[0] && !str_find_nocase(m_FileList[m_FilesSelectedIndex].m_aName, m_aFileDialogFilterString)))
+			RefreshFilteredFileList();
+			if(m_FilteredFileList.size() == 0)
+			{
+				m_FilesSelectedIndex = -1;
+			}
+			else if(m_FilesSelectedIndex == -1 || (m_aFileDialogFilterString[0] && !str_find_nocase(m_FilteredFileList[m_FilesSelectedIndex]->m_aName, m_aFileDialogFilterString)))
 			{
 				// we need to refresh selection
 				m_FilesSelectedIndex = -1;
-				// find first valid entry, if it exists
-				for(int i = 0; i < m_FileList.size(); i++)
-					if(str_find_nocase(m_FileList[i].m_aName, m_aFileDialogFilterString))
+				for(int i = 0; i < m_FilteredFileList.size(); i++)
+				{
+					if(str_find_nocase(m_FilteredFileList[i]->m_aName, m_aFileDialogFilterString))
 					{
 						m_FilesSelectedIndex = i;
 						break;
 					}
-			}
-		}
-	}
-
-	int Num = (int)(View.h/17.0f)+1;
-	m_FileDialogScrollValue = UI()->DoScrollbarV(&m_FileDialogScrollValue, &Scroll, m_FileDialogScrollValue);
-
-	int ScrollNum = m_FileList.size()-Num+1;
-	if(ScrollNum > 0)
-	{
-		if(Input()->KeyPress(KEY_MOUSE_WHEEL_UP))
-			m_FileDialogScrollValue -= 3.0f/ScrollNum;
-		if(Input()->KeyPress(KEY_MOUSE_WHEEL_DOWN))
-			m_FileDialogScrollValue += 3.0f/ScrollNum;
-	}
-	else
-		ScrollNum = 0;
-
-	if(m_FilesSelectedIndex > -1)
-	{
-		for(int i = 0; i < Input()->NumEvents(); i++)
-		{
-			IInput::CEvent Event = Input()->GetEvent(i);
-			int NewIndex = -1;
-			if(Event.m_Flags&IInput::FLAG_PRESS)
-			{
-				if(Event.m_Key == KEY_DOWN) NewIndex = m_FilesSelectedIndex + 1;
-				if(Event.m_Key == KEY_UP) NewIndex = m_FilesSelectedIndex - 1;
-			}
-			if(NewIndex > -1 && NewIndex < m_FileList.size())
-			{
-				//scroll
-				float IndexY = View.y - m_FileDialogScrollValue*ScrollNum*17.0f + NewIndex*17.0f;
-				int Scroll = View.y > IndexY ? -1 : View.y+View.h < IndexY+17.0f ? 1 : 0;
-				if(Scroll)
-				{
-					if(Scroll < 0)
-						m_FileDialogScrollValue = ((float)(NewIndex)+0.5f)/ScrollNum;
-					else
-						m_FileDialogScrollValue = ((float)(NewIndex-Num)+2.5f)/ScrollNum;
 				}
-
-				if(!m_FileList[NewIndex].m_IsDir)
-					str_copy(m_aFileDialogFileName, m_FileList[NewIndex].m_aFilename, sizeof(m_aFileDialogFileName));
-				else
-					m_aFileDialogFileName[0] = 0;
-				m_FilesSelectedIndex = NewIndex;
-				m_PreviewImageIsLoaded = false;
+				if(m_FilesSelectedIndex == -1)
+				{
+					// select first item
+					m_FilesSelectedIndex = 0;
+				}
 			}
+			if(m_FilesSelectedIndex >= 0)
+				str_copy(m_aFilesSelectedName, m_FilteredFileList[m_FilesSelectedIndex]->m_aName, sizeof(m_aFilesSelectedName));
+			else
+				m_aFilesSelectedName[0] = '\0';
+			s_ListBox.ScrollToSelected();
 		}
+	}
 
-		if (m_FileDialogFileType == CEditor::FILETYPE_IMG && !m_PreviewImageIsLoaded && m_FilesSelectedIndex > -1)
+	if(m_FilesSelectedIndex >= 0 && m_FilesSelectedIndex < m_FilteredFileList.size())
+	{
+		if(m_FileDialogFileType == CEditor::FILETYPE_IMG && !m_PreviewImageIsLoaded)
 		{
-			int Length = str_length(m_FileList[m_FilesSelectedIndex].m_aFilename);
-			if (Length >= 4 && str_endswith_nocase(m_FileList[m_FilesSelectedIndex].m_aFilename, ".png"))
+			int Length = str_length(m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename);
+			if(Length >= str_length(".png") && str_endswith_nocase(m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename, ".png"))
 			{
-				char aBuffer[1024];
-				str_format(aBuffer, sizeof(aBuffer), "%s/%s", m_pFileDialogPath, m_FileList[m_FilesSelectedIndex].m_aFilename);
-
-				if(Graphics()->LoadPNG(&m_FilePreviewImageInfo, aBuffer, m_FileList[m_FilesSelectedIndex].m_StorageType))
+				char aBuffer[IO_MAX_PATH_LENGTH];
+				str_format(aBuffer, sizeof(aBuffer), "%s/%s", m_pFileDialogPath, m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename);
+				if(Graphics()->LoadPNG(&m_FilePreviewImageInfo, aBuffer, m_FilteredFileList[m_FilesSelectedIndex]->m_StorageType))
 				{
 					Graphics()->UnloadTexture(&m_FilePreviewImage);
 					m_FilePreviewImage = Graphics()->LoadTextureRaw(m_FilePreviewImageInfo.m_Width, m_FilePreviewImageInfo.m_Height, m_FilePreviewImageInfo.m_Format, m_FilePreviewImageInfo.m_pData, m_FilePreviewImageInfo.m_Format, IGraphics::TEXLOAD_NORESAMPLE);
@@ -3139,16 +2817,16 @@ void CEditor::RenderFileDialog()
 				}
 			}
 		}
-		if (m_PreviewImageIsLoaded)
+		if(m_PreviewImageIsLoaded)
 		{
 			int w = m_FilePreviewImageInfo.m_Width;
 			int h = m_FilePreviewImageInfo.m_Height;
-			if (m_FilePreviewImageInfo.m_Width > Preview.w)
+			if(m_FilePreviewImageInfo.m_Width > Preview.w)
 			{
 				h = m_FilePreviewImageInfo.m_Height * Preview.w / m_FilePreviewImageInfo.m_Width;
 				w = Preview.w;
 			}
-			if (h > Preview.h)
+			if(h > Preview.h)
 			{
 				w = w * Preview.h / h,
 				h = Preview.h;
@@ -3163,75 +2841,75 @@ void CEditor::RenderFileDialog()
 		}
 	}
 
-	for(int i = 0; i < Input()->NumEvents(); i++)
+	s_ListBox.DoStart(15.0f, m_FilteredFileList.size(), 1, 5, m_FilesSelectedIndex, &View);
+
+	for(int i = 0; i < m_FilteredFileList.size(); i++)
 	{
-		IInput::CEvent Event = Input()->GetEvent(i);
-		if(Event.m_Flags&IInput::FLAG_PRESS)
-		{
-			if(Event.m_Key == KEY_RETURN || Event.m_Key == KEY_KP_ENTER)
-				m_aFileDialogActivate = true;
-		}
+		CListboxItem Item = s_ListBox.DoNextItem(&m_FilteredFileList[i], m_FilesSelectedIndex == i);
+		if(!Item.m_Visible)
+			continue;
+
+		CUIRect Label, FileIcon;
+		Item.m_Rect.VSplitLeft(Item.m_Rect.h, &FileIcon, &Label);
+		FileIcon.Margin(2.0f, &FileIcon);
+		Label.VSplitLeft(5.0f, 0, &Label);
+
+		Graphics()->TextureSet(g_pData->m_aImages[IMAGE_FILEICONS].m_Id);
+		Graphics()->QuadsBegin();
+		RenderTools()->SelectSprite(m_FilteredFileList[i]->m_IsDir ? SPRITE_FILE_FOLDER : SPRITE_FILE_MAP2);
+		IGraphics::CQuadItem QuadItem(FileIcon.x, FileIcon.y, FileIcon.w, FileIcon.h);
+		Graphics()->QuadsDrawTL(&QuadItem, 1);
+		Graphics()->QuadsEnd();
+
+		UI()->DoLabelSelected(&Label, m_FilteredFileList[i]->m_aName, Item.m_Selected, 10.0f, TEXTALIGN_ML);
 	}
 
-	if(m_FileDialogScrollValue < 0) m_FileDialogScrollValue = 0;
-	if(m_FileDialogScrollValue > 1) m_FileDialogScrollValue = 1;
-
-	m_FilesStartAt = (int)(ScrollNum*m_FileDialogScrollValue);
-	if(m_FilesStartAt < 0)
-		m_FilesStartAt = 0;
-
-	m_FilesStopAt = m_FilesStartAt+Num;
-
-	m_FilesCur = 0;
-
-	// set clipping
-	UI()->ClipEnable(&View);
-
-	for(int i = 0; i < m_FileList.size(); i++)
-		AddFileDialogEntry(i, &View);
-
-	// disable clipping again
-	UI()->ClipDisable();
+	int NewSelection = s_ListBox.DoEnd();
+	if(NewSelection != m_FilesSelectedIndex)
+	{
+		m_FilesSelectedIndex = NewSelection;
+		str_copy(m_aFilesSelectedName, m_FilteredFileList[m_FilesSelectedIndex]->m_aName, sizeof(m_aFilesSelectedName));
+		if(!m_FilteredFileList[m_FilesSelectedIndex]->m_IsDir)
+			m_FileDialogFileNameInput.Set(m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename);
+		else
+			m_FileDialogFileNameInput.Clear();
+		m_PreviewImageIsLoaded = false;
+	}
 
 	// the buttons
-	static int s_OkButton = 0;
-	static int s_CancelButton = 0;
-	static int s_NewFolderButton = 0;
-	static int s_MapInfoButton = 0;
-
 	CUIRect Button;
 	ButtonBar.VSplitRight(50.0f, &ButtonBar, &Button);
-	bool IsDir = m_FilesSelectedIndex >= 0 && m_FileList[m_FilesSelectedIndex].m_IsDir;
-	if(DoButton_Editor(&s_OkButton, IsDir ? "Open" : m_pFileDialogButtonText, 0, &Button, 0, 0) || m_aFileDialogActivate)
+	bool IsDir = m_FilesSelectedIndex >= 0 && m_FilteredFileList[m_FilesSelectedIndex]->m_IsDir;
+	static int s_OkButton = 0;
+	if(DoButton_Editor(&s_OkButton, IsDir ? "Open" : m_pFileDialogButtonText, 0, &Button, 0, 0) || s_ListBox.WasItemActivated())
 	{
-		m_aFileDialogActivate = false;
 		if(IsDir)	// folder
 		{
-			if(str_comp(m_FileList[m_FilesSelectedIndex].m_aFilename, "..") == 0)	// parent folder
+			if(str_comp(m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename, "..") == 0)	// parent folder
 			{
 				if(fs_parent_dir(m_pFileDialogPath))
 					m_pFileDialogPath = m_aFileDialogCurrentFolder;	// leave the link
 			}
 			else	// sub folder
 			{
-				if(m_FileList[m_FilesSelectedIndex].m_IsLink)
+				if(m_FilteredFileList[m_FilesSelectedIndex]->m_IsLink)
 				{
 					m_pFileDialogPath = m_aFileDialogCurrentLink;	// follow the link
-					str_copy(m_aFileDialogCurrentLink, m_FileList[m_FilesSelectedIndex].m_aFilename, sizeof(m_aFileDialogCurrentLink));
+					str_copy(m_aFileDialogCurrentLink, m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename, sizeof(m_aFileDialogCurrentLink));
 				}
 				else
 				{
 					char aTemp[IO_MAX_PATH_LENGTH];
 					str_copy(aTemp, m_pFileDialogPath, sizeof(aTemp));
-					str_format(m_pFileDialogPath, IO_MAX_PATH_LENGTH, "%s/%s", aTemp, m_FileList[m_FilesSelectedIndex].m_aFilename);
+					str_format(m_pFileDialogPath, IO_MAX_PATH_LENGTH, "%s/%s", aTemp, m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename);
 				}
 			}
 			FilelistPopulate(!str_comp(m_pFileDialogPath, "maps") || !str_comp(m_pFileDialogPath, "mapres") ? m_FileDialogStorageType :
-				m_FileList[m_FilesSelectedIndex].m_StorageType);
-			if(m_FilesSelectedIndex >= 0 && !m_FileList[m_FilesSelectedIndex].m_IsDir)
-				str_copy(m_aFileDialogFileName, m_FileList[m_FilesSelectedIndex].m_aFilename, sizeof(m_aFileDialogFileName));
+				m_FilteredFileList[m_FilesSelectedIndex]->m_StorageType);
+			if(m_FilesSelectedIndex >= 0 && !m_FilteredFileList[m_FilesSelectedIndex]->m_IsDir)
+				m_FileDialogFileNameInput.Set(m_FilteredFileList[m_FilesSelectedIndex]->m_aFilename);
 			else
-				m_aFileDialogFileName[0] = 0;
+				m_FileDialogFileNameInput.Clear();
 		}
 		else // file
 		{
@@ -3245,55 +2923,85 @@ void CEditor::RenderFileDialog()
 					m_PopupEventType = POPEVENT_SAVE;
 					m_PopupEventActivated = true;
 				}
-				else
-					if(m_pfnFileDialogFunc)
-						m_pfnFileDialogFunc(m_aFileSaveName, m_FilesSelectedIndex >= 0 ? m_FileList[m_FilesSelectedIndex].m_StorageType : m_FileDialogStorageType, m_pFileDialogUser);
+				else if(m_pfnFileDialogFunc)
+					m_pfnFileDialogFunc(m_aFileSaveName, m_FilesSelectedIndex >= 0 ? m_FilteredFileList[m_FilesSelectedIndex]->m_StorageType : m_FileDialogStorageType, m_pFileDialogUser);
 			}
-			else
-				if(m_pfnFileDialogFunc)
-					m_pfnFileDialogFunc(m_aFileSaveName, m_FilesSelectedIndex >= 0 ? m_FileList[m_FilesSelectedIndex].m_StorageType : m_FileDialogStorageType, m_pFileDialogUser);
+			else if(m_pfnFileDialogFunc)
+				m_pfnFileDialogFunc(m_aFileSaveName, m_FilesSelectedIndex >= 0 ? m_FilteredFileList[m_FilesSelectedIndex]->m_StorageType : m_FileDialogStorageType, m_pFileDialogUser);
 		}
+		s_ListBox.ScrollToSelected();
 	}
 
 	ButtonBar.VSplitRight(40.0f, &ButtonBar, &Button);
 	ButtonBar.VSplitRight(50.0f, &ButtonBar, &Button);
-	if(DoButton_Editor(&s_CancelButton, "Cancel", 0, &Button, 0, 0) || Input()->KeyPress(KEY_ESCAPE))
+	static int s_CancelButton = 0;
+	if(DoButton_Editor(&s_CancelButton, "Cancel", 0, &Button, 0, 0) || UI()->ConsumeHotkey(CUI::HOTKEY_ESCAPE))
 		m_Dialog = DIALOG_NONE;
 
 	if(m_FileDialogStorageType == IStorage::TYPE_SAVE)
 	{
 		ButtonBar.VSplitLeft(40.0f, 0, &ButtonBar);
 		ButtonBar.VSplitLeft(70.0f, &Button, &ButtonBar);
+		static int s_NewFolderButton = 0;
 		if(DoButton_Editor(&s_NewFolderButton, "New folder", 0, &Button, 0, 0))
 		{
-			m_FileDialogNewFolderName[0] = 0;
-			m_FileDialogErrString[0] = 0;
-			static int s_NewFolderPopupID = 0;
-			UiInvokePopupMenu(&s_NewFolderPopupID, 0, Width/2.0f-200.0f, Height/2.0f-100.0f, 400.0f, 200.0f, PopupNewFolder);
+			m_aFileDialogNewFolderName[0] = 0;
+			m_aFileDialogErrString[0] = 0;
+			UI()->DoPopupMenu(Width/2.0f-200.0f, Height/2.0f-100.0f, 400.0f, 200.0f, this, PopupNewFolder);
 			UI()->SetActiveItem(0);
 		}
-	}
 
-	if(m_FileDialogStorageType == IStorage::TYPE_SAVE)
-	{
 		ButtonBar.VSplitLeft(40.0f, 0, &ButtonBar);
 		ButtonBar.VSplitLeft(70.0f, &Button, &ButtonBar);
+		static int s_MapInfoButton = 0;
 		if(DoButton_Editor(&s_MapInfoButton, "Map details", 0, &Button, 0, 0))
 		{
 			str_copy(m_Map.m_MapInfoTmp.m_aAuthor, m_Map.m_MapInfo.m_aAuthor, sizeof(m_Map.m_MapInfoTmp.m_aAuthor));
 			str_copy(m_Map.m_MapInfoTmp.m_aVersion, m_Map.m_MapInfo.m_aVersion, sizeof(m_Map.m_MapInfoTmp.m_aVersion));
 			str_copy(m_Map.m_MapInfoTmp.m_aCredits, m_Map.m_MapInfo.m_aCredits, sizeof(m_Map.m_MapInfoTmp.m_aCredits));
 			str_copy(m_Map.m_MapInfoTmp.m_aLicense, m_Map.m_MapInfo.m_aLicense, sizeof(m_Map.m_MapInfoTmp.m_aLicense));
-			static int s_MapInfoPopupID = 0;
-			UiInvokePopupMenu(&s_MapInfoPopupID, 0, Width/2.0f-200.0f, Height/2.0f-100.0f, 400.0f, 200.0f, PopupMapInfo);
+			UI()->DoPopupMenu(Width/2.0f-200.0f, Height/2.0f-100.0f, 400.0f, 200.0f, this, PopupMapInfo);
 			UI()->SetActiveItem(0);
 		}
 	}
 }
 
+void CEditor::RefreshFilteredFileList()
+{
+	m_FilteredFileList.clear();
+	for(int i = 0; i < m_CompleteFileList.size(); i++)
+	{
+		if(!m_aFileDialogFilterString[0] || str_find_nocase(m_CompleteFileList[i].m_aName, m_aFileDialogFilterString))
+		{
+			m_FilteredFileList.add(&m_CompleteFileList[i]);
+		}
+	}
+	if(m_FilteredFileList.size() > 0)
+	{
+		if(m_aFilesSelectedName[0])
+		{
+			for(int i = 0; i < m_FilteredFileList.size(); i++)
+			{
+				if(m_aFilesSelectedName[0] && str_comp(m_FilteredFileList[i]->m_aName, m_aFilesSelectedName) == 0)
+				{
+					m_FilesSelectedIndex = i;
+					break;
+				}
+			}
+		}
+		m_FilesSelectedIndex = clamp(m_FilesSelectedIndex, 0, m_FilteredFileList.size() - 1);
+		str_copy(m_aFilesSelectedName, m_FilteredFileList[m_FilesSelectedIndex]->m_aName, sizeof(m_aFilesSelectedName));
+	}
+	else
+	{
+		m_FilesSelectedIndex = -1;
+		m_aFilesSelectedName[0] = '\0';
+	}
+}
+
 void CEditor::FilelistPopulate(int StorageType)
 {
-	m_FileList.clear();
+	m_CompleteFileList.clear();
 	if(m_FileDialogStorageType != IStorage::TYPE_SAVE && !str_comp(m_pFileDialogPath, "maps"))
 	{
 		CFilelistItem Item;
@@ -3302,12 +3010,16 @@ void CEditor::FilelistPopulate(int StorageType)
 		Item.m_IsDir = true;
 		Item.m_IsLink = true;
 		Item.m_StorageType = IStorage::TYPE_SAVE;
-		m_FileList.add(Item);
+		m_CompleteFileList.add(Item);
 	}
 	Storage()->ListDirectory(StorageType, m_pFileDialogPath, EditorListdirCallback, this);
-	m_FilesSelectedIndex = m_FileList.size() ? 0 : -1;
+	RefreshFilteredFileList();
+	m_FilesSelectedIndex = m_FilteredFileList.size() ? 0 : -1;
+	if(m_FilesSelectedIndex >= 0)
+		str_copy(m_aFilesSelectedName, m_FilteredFileList[m_FilesSelectedIndex]->m_aName, sizeof(m_aFilesSelectedName));
+	else
+		m_aFilesSelectedName[0] = '\0';
 	m_PreviewImageIsLoaded = false;
-	m_aFileDialogActivate = false;
 }
 
 void CEditor::InvokeFileDialog(int StorageType, int FileType, const char *pTitle, const char *pButtonText,
@@ -3319,19 +3031,17 @@ void CEditor::InvokeFileDialog(int StorageType, int FileType, const char *pTitle
 	m_pFileDialogButtonText = pButtonText;
 	m_pfnFileDialogFunc = pfnFunc;
 	m_pFileDialogUser = pUser;
-	m_aFileDialogFileName[0] = 0;
+	m_FileDialogFileNameInput.Clear();
 	m_aFileDialogCurrentFolder[0] = 0;
 	m_aFileDialogCurrentLink[0] = 0;
-	m_aFileDialogFilterString[0] = 0;
+	m_FileDialogFilterInput.Clear();
 	m_pFileDialogPath = m_aFileDialogCurrentFolder;
 	m_FileDialogFileType = FileType;
-	m_FileDialogScrollValue = 0.0f;
-	m_FilesSearchBoxID = 0;
-	UI()->SetActiveItem(&m_FilesSearchBoxID);
+	UI()->SetActiveItem(&m_FileDialogFilterInput);
 	m_PreviewImageIsLoaded = false;
 
 	if(pDefaultName)
-		str_copy(m_aFileDialogFileName, pDefaultName, sizeof(m_aFileDialogFileName));
+		m_FileDialogFileNameInput.Set(pDefaultName);
 	if(pBasePath)
 		str_copy(m_aFileDialogCurrentFolder, pBasePath, sizeof(m_aFileDialogCurrentFolder));
 
@@ -3377,10 +3087,10 @@ void CEditor::RenderStatusbar(CUIRect View)
 		{
 			char aBuf[512];
 			str_format(aBuf, sizeof(aBuf), "%s Right click for context menu.", m_pTooltip);
-			UI()->DoLabel(&View, aBuf, 10.0f, CUI::ALIGN_LEFT);
+			UI()->DoLabel(&View, aBuf, 10.0f, TEXTALIGN_LEFT);
 		}
 		else
-			UI()->DoLabel(&View, m_pTooltip, 10.0f, CUI::ALIGN_LEFT);
+			UI()->DoLabel(&View, m_pTooltip, 10.0f, TEXTALIGN_LEFT);
 	}
 }
 
@@ -3458,7 +3168,7 @@ void CEditor::RenderEnvelopeEditor(CUIRect View)
 		char aBuf[IO_MAX_PATH_LENGTH];
 		str_format(aBuf, sizeof(aBuf),"%d/%d", m_SelectedEnvelope+1, m_Map.m_lEnvelopes.size());
 		Shifter.Draw(vec4(1,1,1,0.5f), 0.0f, CUIRect::CORNER_NONE);
-		UI()->DoLabel(&Shifter, aBuf, 10.0f, CUI::ALIGN_CENTER);
+		UI()->DoLabel(&Shifter, aBuf, 10.0f, TEXTALIGN_CENTER);
 
 		static int s_PrevButton = 0;
 		if(DoButton_ButtonDec(&s_PrevButton, 0, 0, &Dec, 0, "Previous Envelope"))
@@ -3472,12 +3182,13 @@ void CEditor::RenderEnvelopeEditor(CUIRect View)
 		{
 			ToolBar.VSplitLeft(15.0f, &Button, &ToolBar);
 			ToolBar.VSplitLeft(35.0f, &Button, &ToolBar);
-			UI()->DoLabel(&Button, "Name:", 10.0f, CUI::ALIGN_LEFT);
+			UI()->DoLabel(&Button, "Name:", 10.0f, TEXTALIGN_LEFT);
 
 			ToolBar.VSplitLeft(80.0f, &Button, &ToolBar);
 
-			static float s_NameBox = 0;
-			if(DoEditBox(&s_NameBox, &Button, pEnvelope->m_aName, sizeof(pEnvelope->m_aName), 10.0f, &s_NameBox))
+			static CLineInput s_NameInput;
+			s_NameInput.SetBuffer(pEnvelope->m_aName, sizeof(pEnvelope->m_aName));
+			if(DoEditBox(&s_NameInput, &Button, 10.0f))
 				m_Map.m_Modified = true;
 		}
 	}
@@ -3534,7 +3245,7 @@ void CEditor::RenderEnvelopeEditor(CUIRect View)
 
 			ToolBar.VSplitLeft(4.0f, &Button, &ToolBar);
 			ToolBar.VSplitLeft(80.0f, &Button, &ToolBar);
-			UI()->DoLabel(&Button, "Synchronized", 10.0f, CUI::ALIGN_LEFT);
+			UI()->DoLabel(&Button, "Synchronized", 10.0f, TEXTALIGN_LEFT);
 		}
 
 		float EndTime = pEnvelope->EndTime();
@@ -4020,21 +3731,20 @@ void CEditor::RenderEnvelopeEditor(CUIRect View)
 
 			char aBuf[512];
 			str_format(aBuf, sizeof(aBuf),"%.3f %.3f", CurrentTime/1000.0f, fx2f(CurrentValue));
-			UI()->DoLabel(&ToolBar, aBuf, 10.0f, CUI::ALIGN_CENTER);
+			UI()->DoLabel(&ToolBar, aBuf, 10.0f, TEXTALIGN_CENTER);
 		}
 	}
 }
 
 void CEditor::RenderMenubar(CUIRect MenuBar)
 {
-	CUIRect ExitButton;
-	static CUIRect s_File /*, view, help*/;
+	CUIRect FileButton;
+	static int s_FileButton;
+	MenuBar.VSplitLeft(60.0f, &FileButton, &MenuBar);
+	if(DoButton_Menu(&s_FileButton, "File", 0, &FileButton, 0, 0))
+		UI()->DoPopupMenu(FileButton.x, FileButton.y+FileButton.h-1.0f, 120, 150, this, PopupMenuFile, CUIRect::CORNER_R|CUIRect::CORNER_B);
 
-	MenuBar.VSplitLeft(60.0f, &s_File, &MenuBar);
-	if(DoButton_Menu(&s_File, "File", 0, &s_File, 0, 0))
-		UiInvokePopupMenu(&s_File, 1, s_File.x, s_File.y+s_File.h-1.0f, 120, 150, PopupMenuFile, this);
-
-	CUIRect Info;
+	CUIRect Info, ExitButton;
 	MenuBar.VSplitRight(20.f, &MenuBar, &ExitButton);
 	MenuBar.VSplitLeft(40.0f, 0, &MenuBar);
 	MenuBar.VSplitLeft(MenuBar.w*0.75f, &MenuBar, &Info);
@@ -4042,10 +3752,10 @@ void CEditor::RenderMenubar(CUIRect MenuBar)
 
 	char aBuf[128];
 	str_format(aBuf, sizeof(aBuf), "File: %s", m_aFileName);
-	UI()->DoLabel(&MenuBar, aBuf, 10.0f, CUI::ALIGN_LEFT);
+	UI()->DoLabel(&MenuBar, aBuf, 10.0f, TEXTALIGN_LEFT);
 
 	str_format(aBuf, sizeof(aBuf), "Z: %i, A: %.1f, G: %i", m_ZoomLevel, m_AnimateSpeed, m_GridFactor);
-	UI()->DoLabel(&Info, aBuf, 10.0f, CUI::ALIGN_RIGHT);
+	UI()->DoLabel(&Info, aBuf, 10.0f, TEXTALIGN_RIGHT);
 
 	// Exit editor button
 	static int s_ExitButton;
@@ -4070,7 +3780,9 @@ void CEditor::Render()
 	// reset tip
 	m_pTooltip = 0;
 
-	if(m_EditBoxActive)
+	if(UI()->IsInputActive())
+		m_EditBoxActive = 2;
+	else if(m_EditBoxActive)
 		--m_EditBoxActive;
 
 	// render checker
@@ -4160,7 +3872,7 @@ void CEditor::Render()
 	}
 
 	if(m_Mode == MODE_LAYERS && m_GuiActive)
-		RenderLayers(ToolBox, View);
+		RenderLayers(ToolBox);
 	else if(m_Mode == MODE_IMAGES)
 	{
 		if(m_GuiActive)
@@ -4188,14 +3900,12 @@ void CEditor::Render()
 
 	if(m_PopupEventActivated)
 	{
-		static int s_PopupID = 0;
-		UiInvokePopupMenu(&s_PopupID, 0, Width/2.0f-200.0f, Height/2.0f-100.0f, 400.0f, 200.0f, PopupEvent);
+		UI()->DoPopupMenu(Width/2.0f-200.0f, Height/2.0f-100.0f, 400.0f, 200.0f, this, PopupEvent);
 		m_PopupEventActivated = false;
 		m_PopupEventWasActivated = true;
 	}
 
-
-	UiDoPopupMenu();
+	UI()->RenderPopupMenus();
 
 	if(m_GuiActive)
 		RenderStatusbar(StatusBar);
@@ -4431,7 +4141,7 @@ void CEditor::Init()
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
-	m_UI.Init(m_pConfig, m_pGraphics, m_pInput, m_pTextRender);
+	m_UI.Init(Kernel());
 	m_RenderTools.Init(m_pConfig, m_pGraphics);
 	m_Map.m_pEditor = this;
 
@@ -4458,7 +4168,6 @@ void CEditor::Init()
 #endif
 }
 
-static const char *s_aMaps[] = {"ctf1", "ctf2", "ctf3", "ctf4", "ctf5", "ctf6", "ctf7", "ctf8", "dm1", "dm2", "dm3", "dm6", "dm7", "dm8", "dm9", "lms1"};
 static const char *s_aImageName[] = { "grass_doodads", "winter_main" };
 
 static int s_GrassDoodadsIndicesOld[] = { 42, 43, 44, 58, 59, 60, 74, 75, 76, 132, 133, 148, 149, 163, 164, 165, 169, 170, 185, 186 };
@@ -4469,13 +4178,15 @@ static int s_WinterMainIndicesNew[] = { 218, 219, 220, 221, 222, 223, 234, 235, 
 void CEditor::ConMapMagic(IConsole::IResult *pResult, void *pUserData)
 {
 	CEditor *pSelf = static_cast<CEditor *>(pUserData);
+	IMapChecker *pMapChecker = pSelf->Kernel()->RequestInterface<IMapChecker>();
 	int Flag = pResult->GetInteger(0);
 
-	for(unsigned m = 0; m < sizeof(s_aMaps) / sizeof(s_aMaps[0]); ++m)
+	for(int m = 0; m < pMapChecker->NumStandardMaps(); ++m)
 	{
-		char aBuf[64] = { 0 };
-		str_format(aBuf, sizeof(aBuf), "maps/%s.map", s_aMaps[m]);
-		dbg_msg("map magic", "processing map '%s'", s_aMaps[m]);
+		const char *pMapName = pMapChecker->GetStandardMapName(m);
+		char aBuf[64];
+		str_format(aBuf, sizeof(aBuf), "maps/%s.map", pMapName);
+		dbg_msg("map magic", "processing map '%s'", pMapName);
 		CallbackOpenMap(aBuf, IStorage::TYPE_ALL, pSelf);
 		bool Edited = false;
 
@@ -4495,8 +4206,8 @@ void CEditor::ConMapMagic(IConsole::IResult *pResult, void *pUserData)
 
 		if(Edited)
 		{
-			str_format(aBuf, sizeof(aBuf), "maps/%s_mapmagic.map", s_aMaps[m]);
-			dbg_msg("map magic", "saving map '%s_mapmagic'", s_aMaps[m]);
+			str_format(aBuf, sizeof(aBuf), "maps/%s_mapmagic.map", pMapName);
+			dbg_msg("map magic", "saving map '%s_mapmagic'", pMapName);
 			CallbackSaveMap(aBuf, IStorage::TYPE_SAVE, pSelf);
 		}
 	}
@@ -4571,7 +4282,12 @@ void CEditor::UpdateAndRender()
 	else
 		m_AnimateTime = 0;
 	ms_pUiGotContext = 0;
+
+	CUIElementBase::Init(UI()); // update static pointer because game and editor use separate UI
 	UI()->StartCheck();
+
+	for(int i = 0; i < Input()->NumEvents(); i++)
+		UI()->OnInput(Input()->GetEvent(i));
 
 	// handle cursor movement
 	{
@@ -4634,7 +4350,10 @@ void CEditor::UpdateAndRender()
 	}
 
 	UI()->FinishCheck();
+	UI()->ClearHotkeys();
 	Input()->Clear();
+
+	CLineInput::RenderCandidates();
 }
 
 IEditor *CreateEditor() { return new CEditor; }
